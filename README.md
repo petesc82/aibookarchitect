@@ -1,11 +1,19 @@
-<div align="center">
+# AI Book Architect
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Eine PWA-App zur Generierung von Büchern basierend auf KI.
 
-  <h1>Built with AI Studio</h2>
+## Funktionen
+- **Themen-Eingabe**: Von einem Wort bis zu 5 Sätzen.
+- **Inhaltsverzeichnis (ToC)**: Automatische Erstellung eines strukturierten Inhaltsverzeichnisses.
+- **Anpassbare Parameter**: Wähle Stil (wissenschaftlich, unterhaltsam, etc.) und Struktur (Beispiele, Reflexionsfragen).
+- **Längensteuerung**: Definiere Seitenanzahl und Wortzahlen.
+- **Kapitel-Vorschau**: Generiere ein Test-Kapitel zur Überprüfung von Ton und Stil.
+- **Export**: Exportiere dein Buch als Markdown (MD), PDF oder EPUB.
 
-  <p>The fastest path from prompt to production with Gemini.</p>
-
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+## Technologien
+- React 19
+- Tailwind CSS
+- Gemini AI (@google/genai)
+- jsPDF (PDF Export)
+- JSZip (EPUB Export Vorbereitung)
+- Framer Motion (Animationen)
