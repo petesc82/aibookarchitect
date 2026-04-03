@@ -14,11 +14,14 @@ import {
   Type as TypeIcon,
   Layers,
   Sparkles,
-  Lightbulb
+  Lightbulb,
+  RefreshCw,
+  RotateCcw,
+  Key
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { Book, Chapter, BookParameters, DEFAULT_PARAMETERS } from "./types";
-import { generateToC, generateChapterContent, suggestParameters, generateCoverImage, refineChapterContent, generateInspiration } from "./services/geminiService";
+import { Book, Chapter, BookParameters, DEFAULT_PARAMETERS, ModelType } from "./types";
+import { generateToC, generateChapterContent, suggestParameters, generateCoverImage, refineChapterContent, generateInspiration, regenerateChapterInToC, generateWorksheets, generateCheatSheet, generateActionPlan } from "./services/geminiService";
 import { exportToMarkdown, exportToPDF, exportToEPUB } from "./services/exportService";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -29,6 +32,10 @@ function cn(...inputs: ClassValue[]) {
 
 const CATEGORIES = [
   "Eigenes Thema und Kategorie",
+  "AI",
+  "Business",
+  "Christlicher Glaube und Theologie",
+  "Filme und Serien",
   "Kochen & Backen",
   "Reisen & Abenteuer",
   "Persönlichkeitsentwicklung",
@@ -55,11 +62,15 @@ const TONES = [
   "Wissenschaftlich & Ernsthaft"
 ];
 
+const PRESET_OPENROUTER_KEY = "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";
+
 export default function App() {
   const [step, setStep] = useState<"topic" | "toc" | "parameters" | "preview" | "generating" | "finished">("topic");
   const [topic, setTopic] = useState("");
   const [selectedCategory, setSelectedCategory] = useState(CATEGORIES[0]);
   const [toneValue, setToneValue] = useState(2); // Default: Neutral & Informativ
+  const [preferredModel, setPreferredModel] = useState(DEFAULT_PARAMETERS.preferredModel);
+  const [openRouterKey, setOpenRouterKey] = useState("");
   const [book, setBook] = useState<Book | null>(null);
   const [loading, setLoading] = useState(false);
   const [isInspirationLoading, setIsInspirationLoading] = useState(false);
@@ -75,7 +86,7 @@ export default function App() {
     setIsInspirationLoading(true);
     setError(null);
     try {
-      const result = await generateInspiration(selectedCategory, TONES[toneValue]);
+      const result = await generateInspiration(selectedCategory, TONES[toneValue], preferredModel, openRouterKey);
       setTopic(result);
     } catch (err) {
       setError("Fehler beim Generieren der Inspiration.");
@@ -91,15 +102,15 @@ export default function App() {
     setError(null);
     try {
       const [tocResult, suggestedParams] = await Promise.all([
-        generateToC(topic),
-        suggestParameters(topic)
+        generateToC(topic, preferredModel, openRouterKey),
+        suggestParameters(topic, openRouterKey)
       ]);
       
       setBook({
         topic,
         title: tocResult.title,
         chapters: tocResult.chapters,
-        parameters: { ...DEFAULT_PARAMETERS, ...suggestedParams }
+        parameters: { ...DEFAULT_PARAMETERS, ...suggestedParams, preferredModel, openRouterKey }
       });
       setStep("toc");
     } catch (err) {
@@ -127,10 +138,59 @@ export default function App() {
   // Parameter Update
   const updateParams = (newParams: Partial<BookParameters>) => {
     if (!book) return;
-    setBook({
+    const updatedBook = {
       ...book,
       parameters: { ...book.parameters, ...newParams }
-    });
+    };
+    setBook(updatedBook);
+    if (newParams.preferredModel) setPreferredModel(newParams.preferredModel);
+    if (newParams.openRouterKey !== undefined) setOpenRouterKey(newParams.openRouterKey);
+  };
+
+  // Regenerate ToC
+  const handleRegenerateToC = async () => {
+    if (!book) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const tocResult = await generateToC(book.topic, preferredModel, openRouterKey);
+      setBook({
+        ...book,
+        title: tocResult.title,
+        chapters: tocResult.chapters
+      });
+    } catch (err) {
+      setError("Fehler beim Regenerieren des Inhaltsverzeichnisses.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Regenerate Single Chapter in ToC
+  const handleRegenerateChapter = async (chapterId: string) => {
+    if (!book) return;
+    const chapterIndex = book.chapters.findIndex(c => c.id === chapterId);
+    if (chapterIndex === -1) return;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const newChapter = await regenerateChapterInToC(
+        book.title,
+        book.topic,
+        book.chapters[chapterIndex],
+        book.chapters,
+        preferredModel,
+        openRouterKey
+      );
+      const updatedChapters = [...book.chapters];
+      updatedChapters[chapterIndex] = newChapter;
+      setBook({ ...book, chapters: updatedChapters });
+    } catch (err) {
+      setError("Fehler beim Regenerieren des Kapitels.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   // Sample Chapter Generation
@@ -178,18 +238,40 @@ export default function App() {
     const updatedChapters = [...book.chapters];
     
     try {
+      let currentBook = { ...book };
+
       // Ensure cover is generated if not already
-      if (!book.coverImageUrl) {
-        const url = await generateCoverImage(book.title, book.topic);
-        setBook(prev => prev ? { ...prev, coverImageUrl: url } : null);
+      if (!currentBook.coverImageUrl) {
+        const url = await generateCoverImage(currentBook.title, currentBook.topic);
+        currentBook.coverImageUrl = url;
+        setBook(currentBook);
       }
 
       for (let i = 0; i < updatedChapters.length; i++) {
         const chapter = updatedChapters[i];
-        const content = await generateChapterContent(book.title, chapter, book.parameters, book.chapters);
+        const content = await generateChapterContent(currentBook.title, chapter, currentBook.parameters, currentBook.chapters);
         updatedChapters[i] = { ...chapter, content };
-        setBook(prev => prev ? { ...prev, chapters: [...updatedChapters] } : null);
+        currentBook = { ...currentBook, chapters: [...updatedChapters] };
+        setBook(currentBook);
       }
+
+      // Generate additional materials
+      if (currentBook.parameters.generateWorksheets) {
+        const worksheets = await generateWorksheets(currentBook);
+        currentBook = { ...currentBook, worksheets };
+        setBook(currentBook);
+      }
+      if (currentBook.parameters.generateCheatSheet) {
+        const cheatSheet = await generateCheatSheet(currentBook);
+        currentBook = { ...currentBook, cheatSheet };
+        setBook(currentBook);
+      }
+      if (currentBook.parameters.generateActionPlan) {
+        const actionPlan = await generateActionPlan(currentBook);
+        currentBook = { ...currentBook, actionPlan };
+        setBook(currentBook);
+      }
+
       setStep("finished");
     } catch (err) {
       setError("Fehler bei der vollständigen Bucherstellung.");
@@ -238,6 +320,77 @@ export default function App() {
               </div>
 
               <div className="space-y-6">
+                {/* Preset Key Helper */}
+                <div className="bg-orange-50/50 p-4 border border-orange-100 rounded-2xl flex items-center gap-3">
+                  <div className="flex-1">
+                    <label className="block text-[10px] uppercase tracking-widest font-bold text-orange-400 mb-1">Verfügbarer OpenRouter Key</label>
+                    <input 
+                      readOnly
+                      value={PRESET_OPENROUTER_KEY}
+                      className="w-full bg-transparent border-none p-0 text-xs text-orange-800 font-mono outline-none"
+                    />
+                  </div>
+                  <button 
+                    onClick={() => setOpenRouterKey(PRESET_OPENROUTER_KEY)}
+                    className="px-3 py-2 bg-orange-500 text-white text-xs font-bold rounded-lg hover:bg-orange-600 transition-colors flex items-center gap-2"
+                  >
+                    <Download size={14} /> Übernehmen
+                  </button>
+                </div>
+
+                {/* Model Selection at the start */}
+                <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-4">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
+                      <Settings size={14} /> KI-Modell & Quota-Schutz
+                    </label>
+                  </div>
+                  <select 
+                    value={preferredModel}
+                    onChange={(e) => setPreferredModel(e.target.value as any)}
+                    className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20 text-lg font-medium"
+                  >
+                    <optgroup label="Gemini Modelle">
+                      <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Beste Qualität)</option>
+                      <option value="gemini-3-flash-preview">Gemini 3 Flash (Schnell & Stabil)</option>
+                      <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite (Sehr schnell)</option>
+                      <option value="gemini-flash-latest">Gemini Flash Latest (Stabil)</option>
+                      <option value="gemini-3.1-flash-live-preview">Gemini 3.1 Flash Live (Echtzeit)</option>
+                    </optgroup>
+                    <optgroup label="OpenRouter (Gratis Modelle)">
+                      <option value="openrouter/google/gemini-2.0-flash-lite-preview-02-05:free">Gemini 2.0 Flash Lite (Free)</option>
+                      <option value="openrouter/mistralai/mistral-7b-instruct:free">Mistral 7B Instruct (Free)</option>
+                      <option value="openrouter/huggingfaceh4/zephyr-7b-beta:free">Zephyr 7B Beta (Free)</option>
+                      <option value="openrouter/openchat/openchat-7b:free">OpenChat 7B (Free)</option>
+                      <option value="openrouter/gryphe/mythomist-7b:free">MythoMist 7B (Free)</option>
+                      <option value="openrouter/qwen/qwen3.6-plus:free">Qwen 3.6 Plus (Free)</option>
+                      <option value="openrouter/nvidia/llama-nemotron-embed-vl-1b-v2:free">Llama Nemotron 1B (Free)</option>
+                      <option value="openrouter/minimax/minimax-m2.5:free">MiniMax M2.5 (Free)</option>
+                      <option value="openrouter/z-ai/glm-4.5-air:free">GLM 4.5 Air (Free)</option>
+                      <option value="openrouter/openai/gpt-oss-120b:free">GPT OSS 120B (Free)</option>
+                    </optgroup>
+                  </select>
+                  
+                  {preferredModel.startsWith('openrouter/') && (
+                    <div className="space-y-2">
+                      <label className="block text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
+                        <Key size={12} /> OpenRouter API Key
+                      </label>
+                      <input 
+                        type="password"
+                        value={openRouterKey}
+                        onChange={(e) => setOpenRouterKey(e.target.value)}
+                        placeholder="sk-or-v1-..."
+                        className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
+                      />
+                    </div>
+                  )}
+                  
+                  <p className="text-[10px] text-stone-400 italic leading-tight">
+                    Hinweis: Falls ein Modell sein Limit erreicht, wird automatisch auf das Ersatzmodell gewechselt.
+                  </p>
+                </div>
+
                 {/* Category Selection */}
                 <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-4">
                   <label className="block text-xs uppercase tracking-widest font-bold text-stone-400">Kategorie</label>
@@ -295,11 +448,19 @@ export default function App() {
                     value={topic}
                     onChange={(e) => setTopic(e.target.value)}
                     placeholder={selectedCategory === CATEGORIES[0] ? "Beschreibe dein Thema hier..." : "Hier erscheint dein generiertes Thema oder gib dein eigenes ein..."}
-                    className="w-full min-h-[160px] p-6 bg-white border border-stone-200 rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all text-lg resize-none"
+                    className="w-full min-h-[320px] p-6 bg-white border border-stone-200 rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all text-base sm:text-lg resize-none leading-relaxed"
                   />
                   <div className="absolute bottom-4 right-4 text-xs text-stone-400">
                     {topic.length} Zeichen
                   </div>
+                </div>
+
+                {/* iOS/Safari Cookie Note */}
+                <div className="p-4 bg-blue-50 border border-blue-100 rounded-xl flex items-start gap-3">
+                  <AlertCircle className="text-blue-500 shrink-0 mt-0.5" size={18} />
+                  <p className="text-xs text-blue-800 leading-tight">
+                    <strong>Hinweis für iOS/Safari:</strong> Falls die App nicht lädt, öffne sie bitte in einem <strong>neuen Tab</strong> (Icon oben rechts im AI Studio) oder nutze "Zum Home-Bildschirm hinzufügen", um Cookie-Beschränkungen zu umgehen.
+                  </p>
                 </div>
               </div>
 
@@ -323,11 +484,21 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-8"
             >
-              <div className="flex items-center gap-4">
-                <button onClick={() => setStep("topic")} className="p-2 hover:bg-stone-100 rounded-full transition-colors">
-                  <ChevronLeft size={20} />
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <button onClick={() => setStep("topic")} className="p-2 hover:bg-stone-100 rounded-full transition-colors">
+                    <ChevronLeft size={20} />
+                  </button>
+                  <h2 className="text-3xl font-serif italic">{book.title}</h2>
+                </div>
+                <button 
+                  onClick={handleRegenerateToC}
+                  disabled={loading}
+                  className="p-2 text-stone-400 hover:text-orange-500 transition-colors"
+                  title="Gesamtes Inhaltsverzeichnis neu generieren"
+                >
+                  <RotateCcw size={20} className={cn(loading && "animate-spin")} />
                 </button>
-                <h2 className="text-3xl font-serif italic">{book.title}</h2>
               </div>
 
               <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden shadow-sm">
@@ -338,12 +509,22 @@ export default function App() {
                 <div className="divide-y divide-stone-100">
                   {book.chapters.map((chapter, idx) => (
                     <div key={chapter.id} className="p-6 hover:bg-stone-50/50 transition-colors group">
-                      <div className="flex items-start gap-4">
-                        <span className="font-serif italic text-stone-300 text-xl">{String(idx + 1).padStart(2, '0')}</span>
-                        <div className="flex-1">
-                          <h3 className="font-bold text-lg group-hover:text-orange-600 transition-colors">{chapter.title}</h3>
-                          <p className="text-sm text-stone-500 mt-1 leading-relaxed">{chapter.description}</p>
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start gap-4 flex-1">
+                          <span className="font-serif italic text-stone-300 text-xl">{String(idx + 1).padStart(2, '0')}</span>
+                          <div className="flex-1">
+                            <h3 className="font-bold text-lg group-hover:text-orange-600 transition-colors">{chapter.title}</h3>
+                            <p className="text-sm text-stone-500 mt-1 leading-relaxed">{chapter.description}</p>
+                          </div>
                         </div>
+                        <button 
+                          onClick={() => handleRegenerateChapter(chapter.id)}
+                          disabled={loading}
+                          className="p-2 text-stone-300 hover:text-orange-500 opacity-0 group-hover:opacity-100 transition-all"
+                          title="Dieses Kapitel neu generieren"
+                        >
+                          <RefreshCw size={16} className={cn(loading && "animate-spin")} />
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -416,10 +597,10 @@ export default function App() {
                         onChange={(e) => updateParams({ targetAudience: e.target.value as any })}
                         className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
                       >
-                        <option value="Beginners">Anfänger</option>
-                        <option value="Experts">Experten</option>
-                        <option value="Children">Kinder</option>
-                        <option value="Seniors">Senioren</option>
+                        <option value="Beginner">Anfänger</option>
+                        <option value="Intermediate">Fortgeschrittener</option>
+                        <option value="Advanced">Fortgeschrittener (Profi-Level)</option>
+                        <option value="Expert">Experte</option>
                       </select>
                     </div>
                     <div>
@@ -434,6 +615,132 @@ export default function App() {
                         <option value="ThirdPerson">Dritte Person</option>
                       </select>
                     </div>
+                    <div>
+                      <label className="block text-sm font-medium text-stone-600 mb-2">Sprachstil</label>
+                      <select 
+                        value={book.parameters.languageStyle}
+                        onChange={(e) => updateParams({ languageStyle: e.target.value as any })}
+                        className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
+                      >
+                        <option value="Casual">Locker / Umgangssprachlich</option>
+                        <option value="Neutral">Neutral</option>
+                        <option value="Academic">Akademisch / Hochgestochen</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-stone-600 mb-2">Lokalisierung</label>
+                      <select 
+                        value={book.parameters.localization}
+                        onChange={(e) => updateParams({ localization: e.target.value as any })}
+                        className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
+                      >
+                        <option value="DACH">DACH (DE/AT/CH)</option>
+                        <option value="US">USA / US-Stil</option>
+                        <option value="Global">Global / International</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-stone-600 mb-2">Struktur-Typ</label>
+                      <select 
+                        value={book.parameters.structureType}
+                        onChange={(e) => updateParams({ structureType: e.target.value as any })}
+                        className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
+                      >
+                        <option value="Chronological">Chronologisch</option>
+                        <option value="ProblemSolution">Problem-Lösung</option>
+                        <option value="Modular">Modular / Nachschlagewerk</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <label className="block text-sm font-medium text-stone-600">Interaktivität</label>
+                        <span className="text-xs font-bold text-orange-600 bg-orange-50 px-2 py-1 rounded-full">Stufe {book.parameters.interactivity}</span>
+                      </div>
+                      <input 
+                        type="range"
+                        min="0"
+                        max="4"
+                        step="1"
+                        value={book.parameters.interactivity}
+                        onChange={(e) => updateParams({ interactivity: parseInt(e.target.value) })}
+                        className="w-full h-2 bg-stone-100 rounded-lg appearance-none cursor-pointer accent-orange-500 mt-2"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Model Selection */}
+                <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-4">
+                  <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
+                    <Settings size={14} /> KI-Modell
+                  </h3>
+                  
+                  {/* Preset Key Helper in Parameters */}
+                  <div className="bg-orange-50/50 p-3 border border-orange-100 rounded-xl flex items-center gap-3">
+                    <div className="flex-1">
+                      <label className="block text-[9px] uppercase tracking-widest font-bold text-orange-400 mb-0.5">Verfügbarer Key</label>
+                      <input 
+                        readOnly
+                        value={PRESET_OPENROUTER_KEY}
+                        className="w-full bg-transparent border-none p-0 text-[10px] text-orange-800 font-mono outline-none"
+                      />
+                    </div>
+                    <button 
+                      onClick={() => updateParams({ openRouterKey: PRESET_OPENROUTER_KEY })}
+                      className="px-2 py-1.5 bg-orange-500 text-white text-[10px] font-bold rounded-md hover:bg-orange-600 transition-colors"
+                    >
+                      Kopieren
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-stone-600 mb-2">Bevorzugtes Modell</label>
+                    <select 
+                      value={book.parameters.preferredModel}
+                      onChange={(e) => {
+                        const model = e.target.value as any;
+                        updateParams({ preferredModel: model });
+                      }}
+                      className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
+                    >
+                      <optgroup label="Gemini Modelle">
+                        <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Beste Qualität)</option>
+                        <option value="gemini-3-flash-preview">Gemini 3 Flash (Schnell & Stabil)</option>
+                        <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite (Sehr schnell)</option>
+                        <option value="gemini-flash-latest">Gemini Flash Latest (Stabil)</option>
+                        <option value="gemini-3.1-flash-live-preview">Gemini 3.1 Flash Live (Echtzeit)</option>
+                      </optgroup>
+                      <optgroup label="OpenRouter (Gratis Modelle)">
+                        <option value="openrouter/google/gemini-2.0-flash-lite-preview-02-05:free">Gemini 2.0 Flash Lite (Free)</option>
+                        <option value="openrouter/mistralai/mistral-7b-instruct:free">Mistral 7B Instruct (Free)</option>
+                        <option value="openrouter/huggingfaceh4/zephyr-7b-beta:free">Zephyr 7B Beta (Free)</option>
+                        <option value="openrouter/openchat/openchat-7b:free">OpenChat 7B (Free)</option>
+                        <option value="openrouter/gryphe/mythomist-7b:free">MythoMist 7B (Free)</option>
+                        <option value="openrouter/qwen/qwen3.6-plus:free">Qwen 3.6 Plus (Free)</option>
+                        <option value="openrouter/nvidia/llama-nemotron-embed-vl-1b-v2:free">Llama Nemotron 1B (Free)</option>
+                        <option value="openrouter/minimax/minimax-m2.5:free">MiniMax M2.5 (Free)</option>
+                        <option value="openrouter/z-ai/glm-4.5-air:free">GLM 4.5 Air (Free)</option>
+                        <option value="openrouter/openai/gpt-oss-120b:free">GPT OSS 120B (Free)</option>
+                      </optgroup>
+                    </select>
+                    
+                    {book.parameters.preferredModel.startsWith('openrouter/') && (
+                      <div className="mt-4 space-y-2">
+                        <label className="block text-sm font-medium text-stone-600 mb-2 flex items-center gap-2">
+                          <Key size={14} /> OpenRouter API Key
+                        </label>
+                        <input 
+                          type="password"
+                          value={book.parameters.openRouterKey || ""}
+                          onChange={(e) => updateParams({ openRouterKey: e.target.value })}
+                          placeholder="sk-or-v1-..."
+                          className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
+                        />
+                      </div>
+                    )}
+                    <p className="text-[10px] text-stone-400 mt-2 italic">
+                      Hinweis: Bei Quota-Überschreitung wird automatisch auf das nächstbeste Modell gewechselt.
+                    </p>
                   </div>
                 </div>
 
@@ -450,6 +757,30 @@ export default function App() {
                       { id: 'scientific', label: 'Wissenschaftlich', icon: FileText },
                       { id: 'easyToRead', label: 'Leicht lesbar', icon: CheckCircle2 },
                       { id: 'entertaining', label: 'Unterhaltsam', icon: Sparkles },
+                    ].map((item) => (
+                      <label key={item.id} className="flex items-center gap-3 p-3 border border-stone-100 rounded-xl cursor-pointer hover:bg-stone-50 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={(book.parameters as any)[item.id]}
+                          onChange={(e) => updateParams({ [item.id]: e.target.checked })}
+                          className="w-5 h-5 accent-orange-500"
+                        />
+                        <span className="text-sm font-medium">{item.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Additional Materials Checkboxes */}
+                <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-4">
+                  <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
+                    <Plus size={14} /> Zusatzmaterialien
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {[
+                      { id: 'generateWorksheets', label: 'Arbeitsblätter & Checklisten', icon: FileText },
+                      { id: 'generateCheatSheet', label: 'Spickzettel (Cheat Sheet)', icon: Layers },
+                      { id: 'generateActionPlan', label: '30-Tage-Aktionsplan', icon: CheckCircle2 },
                     ].map((item) => (
                       <label key={item.id} className="flex items-center gap-3 p-3 border border-stone-100 rounded-xl cursor-pointer hover:bg-stone-50 transition-colors">
                         <input
@@ -678,6 +1009,50 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              {(book.worksheets || book.cheatSheet || book.actionPlan) && (
+                <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-6">
+                  <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400">Zusatzmaterialien</h3>
+                  <div className="grid grid-cols-1 gap-3">
+                    {book.worksheets && (
+                      <button
+                        onClick={() => exportToMarkdown(`${book.title} - Arbeitsblaetter`, book.worksheets || "")}
+                        className="w-full p-4 bg-orange-50/50 border border-orange-100 rounded-xl font-bold flex items-center justify-between hover:bg-orange-100/50 transition-all"
+                      >
+                        <div className="flex items-center gap-3 text-orange-800">
+                          <FileText size={20} />
+                          <span>Arbeitsblätter & Checklisten</span>
+                        </div>
+                        <Download size={18} className="text-orange-300" />
+                      </button>
+                    )}
+                    {book.cheatSheet && (
+                      <button
+                        onClick={() => exportToMarkdown(`${book.title} - Spickzettel`, book.cheatSheet || "")}
+                        className="w-full p-4 bg-blue-50/50 border border-blue-100 rounded-xl font-bold flex items-center justify-between hover:bg-blue-100/50 transition-all"
+                      >
+                        <div className="flex items-center gap-3 text-blue-800">
+                          <Layers size={20} />
+                          <span>Spickzettel (Cheat Sheet)</span>
+                        </div>
+                        <Download size={18} className="text-blue-300" />
+                      </button>
+                    )}
+                    {book.actionPlan && (
+                      <button
+                        onClick={() => exportToMarkdown(`${book.title} - Aktionsplan`, book.actionPlan || "")}
+                        className="w-full p-4 bg-green-50/50 border border-green-100 rounded-xl font-bold flex items-center justify-between hover:bg-green-100/50 transition-all"
+                      >
+                        <div className="flex items-center gap-3 text-green-800">
+                          <CheckCircle2 size={20} />
+                          <span>30-Tage-Aktionsplan</span>
+                        </div>
+                        <Download size={18} className="text-green-300" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <button
                 onClick={() => setStep("topic")}
