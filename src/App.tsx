@@ -1015,41 +1015,102 @@ export default function App() {
                   <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400">Zusatzmaterialien</h3>
                   <div className="grid grid-cols-1 gap-3">
                     {book.worksheets && (
-                      <button
-                        onClick={() => exportToMarkdown(`${book.title} - Arbeitsblaetter`, book.worksheets || "")}
-                        className="w-full p-4 bg-orange-50/50 border border-orange-100 rounded-xl font-bold flex items-center justify-between hover:bg-orange-100/50 transition-all"
-                      >
-                        <div className="flex items-center gap-3 text-orange-800">
-                          <FileText size={20} />
-                          <span>Arbeitsblätter & Checklisten</span>
+                      <div className="bg-orange-50/50 border border-orange-100 rounded-xl overflow-hidden">
+                        <div className="p-4 flex items-center justify-between border-b border-orange-100">
+                          <div className="flex items-center gap-3 text-orange-800 font-bold">
+                            <FileText size={20} />
+                            <span>Arbeitsblätter & Checklisten</span>
+                          </div>
                         </div>
-                        <Download size={18} className="text-orange-300" />
-                      </button>
+                        <div className="grid grid-cols-3 divide-x divide-orange-100">
+                          <button onClick={() => exportToMarkdown(`${book.title} - Arbeitsblaetter`, book.worksheets || "")} className="py-2 text-[10px] uppercase font-bold text-orange-600 hover:bg-orange-100 transition-colors">MD</button>
+                          <button onClick={() => exportToPDF(`${book.title} - Arbeitsblaetter`, book.worksheets || "")} className="py-2 text-[10px] uppercase font-bold text-orange-600 hover:bg-orange-100 transition-colors">PDF</button>
+                          <button onClick={() => exportToEPUB(`${book.title} - Arbeitsblaetter`, [{ title: "Arbeitsblätter", content: book.worksheets || "" }])} className="py-2 text-[10px] uppercase font-bold text-orange-600 hover:bg-orange-100 transition-colors">EPUB</button>
+                        </div>
+                      </div>
                     )}
                     {book.cheatSheet && (
-                      <button
-                        onClick={() => exportToMarkdown(`${book.title} - Spickzettel`, book.cheatSheet || "")}
-                        className="w-full p-4 bg-blue-50/50 border border-blue-100 rounded-xl font-bold flex items-center justify-between hover:bg-blue-100/50 transition-all"
-                      >
-                        <div className="flex items-center gap-3 text-blue-800">
-                          <Layers size={20} />
-                          <span>Spickzettel (Cheat Sheet)</span>
+                      <div className="bg-blue-50/50 border border-blue-100 rounded-xl overflow-hidden">
+                        <div className="p-4 flex items-center justify-between border-b border-blue-100">
+                          <div className="flex items-center gap-3 text-blue-800 font-bold">
+                            <Layers size={20} />
+                            <span>Spickzettel (Cheat Sheet)</span>
+                          </div>
                         </div>
-                        <Download size={18} className="text-blue-300" />
-                      </button>
+                        <div className="grid grid-cols-3 divide-x divide-blue-100">
+                          <button onClick={() => exportToMarkdown(`${book.title} - Spickzettel`, book.cheatSheet || "")} className="py-2 text-[10px] uppercase font-bold text-blue-600 hover:bg-blue-100 transition-colors">MD</button>
+                          <button onClick={() => exportToPDF(`${book.title} - Spickzettel`, book.cheatSheet || "")} className="py-2 text-[10px] uppercase font-bold text-blue-600 hover:bg-blue-100 transition-colors">PDF</button>
+                          <button onClick={() => exportToEPUB(`${book.title} - Spickzettel`, [{ title: "Spickzettel", content: book.cheatSheet || "" }])} className="py-2 text-[10px] uppercase font-bold text-blue-600 hover:bg-blue-100 transition-colors">EPUB</button>
+                        </div>
+                      </div>
                     )}
                     {book.actionPlan && (
-                      <button
-                        onClick={() => exportToMarkdown(`${book.title} - Aktionsplan`, book.actionPlan || "")}
-                        className="w-full p-4 bg-green-50/50 border border-green-100 rounded-xl font-bold flex items-center justify-between hover:bg-green-100/50 transition-all"
-                      >
-                        <div className="flex items-center gap-3 text-green-800">
-                          <CheckCircle2 size={20} />
-                          <span>30-Tage-Aktionsplan</span>
+                      <div className="bg-green-50/50 border border-green-100 rounded-xl overflow-hidden">
+                        <div className="p-4 flex items-center justify-between border-b border-green-100">
+                          <div className="flex items-center gap-3 text-green-800 font-bold">
+                            <CheckCircle2 size={20} />
+                            <span>30-Tage-Aktionsplan</span>
+                          </div>
                         </div>
-                        <Download size={18} className="text-green-300" />
-                      </button>
+                        <div className="grid grid-cols-3 divide-x divide-green-100">
+                          <button onClick={() => exportToMarkdown(`${book.title} - Aktionsplan`, book.actionPlan || "")} className="py-2 text-[10px] uppercase font-bold text-green-600 hover:bg-green-100 transition-colors">MD</button>
+                          <button onClick={() => exportToPDF(`${book.title} - Aktionsplan`, book.actionPlan || "")} className="py-2 text-[10px] uppercase font-bold text-green-600 hover:bg-green-100 transition-colors">PDF</button>
+                          <button onClick={() => exportToEPUB(`${book.title} - Aktionsplan`, [{ title: "Aktionsplan", content: book.actionPlan || "" }])} className="py-2 text-[10px] uppercase font-bold text-green-600 hover:bg-green-100 transition-colors">EPUB</button>
+                        </div>
+                      </div>
                     )}
+
+                    {/* Combined Materials */}
+                    <div className="mt-4 pt-4 border-t border-stone-100">
+                      <div className="bg-stone-900 text-white rounded-xl overflow-hidden">
+                        <div className="p-4 flex items-center justify-between border-b border-stone-800">
+                          <div className="flex items-center gap-3 font-bold">
+                            <Download size={20} className="text-orange-500" />
+                            <span>Alle Materialien (Kombiniert)</span>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 divide-x divide-stone-800">
+                          <button 
+                            onClick={() => {
+                              const combined = [
+                                book.worksheets ? `# Arbeitsblätter\n\n${book.worksheets}` : "",
+                                book.cheatSheet ? `# Spickzettel\n\n${book.cheatSheet}` : "",
+                                book.actionPlan ? `# Aktionsplan\n\n${book.actionPlan}` : ""
+                              ].filter(Boolean).join("\n\n---\n\n");
+                              exportToMarkdown(`${book.title} - Alle Materialien`, combined);
+                            }} 
+                            className="py-3 text-[10px] uppercase font-bold hover:bg-stone-800 transition-colors"
+                          >
+                            MD
+                          </button>
+                          <button 
+                            onClick={() => {
+                              const combined = [
+                                book.worksheets ? `# Arbeitsblätter\n\n${book.worksheets}` : "",
+                                book.cheatSheet ? `# Spickzettel\n\n${book.cheatSheet}` : "",
+                                book.actionPlan ? `# Aktionsplan\n\n${book.actionPlan}` : ""
+                              ].filter(Boolean).join("\n\n---\n\n");
+                              exportToPDF(`${book.title} - Alle Materialien`, combined);
+                            }} 
+                            className="py-3 text-[10px] uppercase font-bold hover:bg-stone-800 transition-colors"
+                          >
+                            PDF
+                          </button>
+                          <button 
+                            onClick={() => {
+                              const chapters = [];
+                              if (book.worksheets) chapters.push({ title: "Arbeitsblätter", content: book.worksheets });
+                              if (book.cheatSheet) chapters.push({ title: "Spickzettel", content: book.cheatSheet });
+                              if (book.actionPlan) chapters.push({ title: "Aktionsplan", content: book.actionPlan });
+                              exportToEPUB(`${book.title} - Alle Materialien`, chapters);
+                            }} 
+                            className="py-3 text-[10px] uppercase font-bold hover:bg-stone-800 transition-colors"
+                          >
+                            EPUB
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
