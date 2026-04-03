@@ -17,3 +17,14 @@ Eine PWA-App zur Generierung von Büchern basierend auf KI.
 - jsPDF (PDF Export)
 - JSZip (EPUB Export Vorbereitung)
 - Framer Motion (Animationen)
+- Vite PWA Plugin
+
+## PWA Nutzung & Bereitstellung
+Die App ist als Progressive Web App (PWA) vorkonfiguriert. Um sie vollständig zu nutzen:
+
+1. **Icons hinzufügen**: Füge folgende Dateien in den Ordner `public/` deines Repos hinzu:
+   - `pwa-192x192.png` (192x192 Pixel)
+   - `pwa-512x512.png` (512x512 Pixel)
+   - `favicon.ico`, `apple-touch-icon.png`, `mask-icon.svg` (optional, aber empfohlen)
+2. **Build & Deploy**: Wenn du die App auf GitHub Pages, Vercel oder Netlify hostest, wird sie automatisch als PWA erkannt.
+3. **Installation**: Öffne die URL auf deinem Smartphone (Chrome/Safari) und wähle "Zum Home-Bildschirm hinzufügen".
