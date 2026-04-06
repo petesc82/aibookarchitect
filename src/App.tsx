@@ -62,7 +62,6 @@ const TONES = [
   "Wissenschaftlich & Ernsthaft"
 ];
 
-const PRESET_OPENROUTER_KEY = "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";
 
 export default function App() {
   const [step, setStep] = useState<"topic" | "toc" | "parameters" | "preview" | "generating" | "finished">("topic");
@@ -320,23 +319,6 @@ export default function App() {
               </div>
 
               <div className="space-y-6">
-                {/* Preset Key Helper */}
-                <div className="bg-orange-50/50 p-4 border border-orange-100 rounded-2xl flex items-center gap-3">
-                  <div className="flex-1">
-                    <label className="block text-[10px] uppercase tracking-widest font-bold text-orange-400 mb-1">Verfügbarer OpenRouter Key</label>
-                    <input 
-                      readOnly
-                      value={PRESET_OPENROUTER_KEY}
-                      className="w-full bg-transparent border-none p-0 text-xs text-orange-800 font-mono outline-none"
-                    />
-                  </div>
-                  <button 
-                    onClick={() => setOpenRouterKey(PRESET_OPENROUTER_KEY)}
-                    className="px-3 py-2 bg-orange-500 text-white text-xs font-bold rounded-lg hover:bg-orange-600 transition-colors flex items-center gap-2"
-                  >
-                    <Download size={14} /> Übernehmen
-                  </button>
-                </div>
 
                 {/* Model Selection at the start */}
                 <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-4">
@@ -675,23 +657,6 @@ export default function App() {
                     <Settings size={14} /> KI-Modell
                   </h3>
                   
-                  {/* Preset Key Helper in Parameters */}
-                  <div className="bg-orange-50/50 p-3 border border-orange-100 rounded-xl flex items-center gap-3">
-                    <div className="flex-1">
-                      <label className="block text-[9px] uppercase tracking-widest font-bold text-orange-400 mb-0.5">Verfügbarer Key</label>
-                      <input 
-                        readOnly
-                        value={PRESET_OPENROUTER_KEY}
-                        className="w-full bg-transparent border-none p-0 text-[10px] text-orange-800 font-mono outline-none"
-                      />
-                    </div>
-                    <button 
-                      onClick={() => updateParams({ openRouterKey: PRESET_OPENROUTER_KEY })}
-                      className="px-2 py-1.5 bg-orange-500 text-white text-[10px] font-bold rounded-md hover:bg-orange-600 transition-colors"
-                    >
-                      Kopieren
-                    </button>
-                  </div>
 
                   <div>
                     <label className="block text-sm font-medium text-stone-600 mb-2">Bevorzugtes Modell</label>
