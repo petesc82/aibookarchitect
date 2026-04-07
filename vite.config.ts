@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
 
   return {
-    base: '/aibookarchitect/',   // ← zwingend notwendig
+    base: '/aibookarchitect/',   
 
     plugins: [
       react(), 
