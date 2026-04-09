@@ -15,7 +15,8 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
+        injectRegister: 'auto',
+        includeAssets: ['favicon-16.png', 'favicon-32.png', 'apple-touch-icon.png'],
         manifest: {
           name: 'AI Book Architect',
           short_name: 'BookArchitect',
@@ -23,21 +24,21 @@ export default defineConfig(({ mode }) => {
           theme_color: '#f97316',
           background_color: '#ffffff',
           display: 'standalone',
-          start_url: '/aibookarchitect/',     // ← wichtig für iOS
+          start_url: '.',
           scope: '/aibookarchitect/',
           icons: [
             {
-              src: 'pwa-192x192.png',
+              src: 'icon-192.png',
               sizes: '192x192',
               type: 'image/png'
             },
             {
-              src: 'pwa-512x512.png',
+              src: 'icon-512.png',
               sizes: '512x512',
               type: 'image/png'
             },
             {
-              src: 'pwa-512x512.png',
+              src: 'icon-512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any maskable'
