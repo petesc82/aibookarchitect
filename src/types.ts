@@ -10,16 +10,18 @@ export type ModelType =
   | 'gemini-3.1-flash-lite-preview' 
   | 'gemini-flash-latest'
   | 'gemini-3.1-flash-live-preview'
-  | 'openrouter/google/gemini-2.0-flash-lite-preview-02-05:free'
-  | 'openrouter/mistralai/mistral-7b-instruct:free'
-  | 'openrouter/huggingfaceh4/zephyr-7b-beta:free'
-  | 'openrouter/openchat/openchat-7b:free'
-  | 'openrouter/gryphe/mythomist-7b:free'
   | 'openrouter/qwen/qwen3.6-plus:free'
-  | 'openrouter/nvidia/llama-nemotron-embed-vl-1b-v2:free'
-  | 'openrouter/minimax/minimax-m2.5:free'
   | 'openrouter/z-ai/glm-4.5-air:free'
-  | 'openrouter/openai/gpt-oss-120b:free';
+  | 'openrouter/openai/gpt-oss-120b:free'
+  | 'openrouter/minimax/minimax-m2.5:free'
+  | 'openrouter/qwen/qwen-2.5-72b-instruct:free'
+  | 'openrouter/meta-llama/llama-3.3-70b-instruct:free'
+  | 'openrouter/deepseek/deepseek-r1:free'
+  | 'openrouter/deepseek/deepseek-chat:free';
+
+export type ImageModelType = 
+  | 'gemini-2.5-flash-image'
+  | 'gemini-2.0-flash-exp-image';
 
 export interface BookParameters {
   useExamples: boolean;
@@ -34,6 +36,7 @@ export interface BookParameters {
   targetAudience: TargetAudience;
   narrativePerspective: NarrativePerspective;
   preferredModel: ModelType;
+  imageModel: ImageModelType;
   openRouterKey?: string;
   // New parameters
   languageStyle: LanguageStyle;
@@ -54,6 +57,14 @@ export interface Chapter {
   isGenerating?: boolean;
 }
 
+export interface GenerationMetadata {
+  totalRequests: number;
+  startTime: string;
+  endTime?: string;
+  totalWordsGenerated: number;
+  modelUsed: ModelType;
+}
+
 export interface Book {
   topic: string;
   title: string;
@@ -64,6 +75,7 @@ export interface Book {
   worksheets?: string;
   cheatSheet?: string;
   actionPlan?: string;
+  generationMetadata?: GenerationMetadata;
 }
 
 export const DEFAULT_PARAMETERS: BookParameters = {
@@ -79,6 +91,7 @@ export const DEFAULT_PARAMETERS: BookParameters = {
   targetAudience: 'Beginner',
   narrativePerspective: 'SecondPerson',
   preferredModel: 'gemini-3.1-pro-preview',
+  imageModel: 'gemini-2.5-flash-image',
   openRouterKey: '',
   languageStyle: 'Neutral',
   localization: 'Global',

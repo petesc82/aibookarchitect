@@ -10,6 +10,8 @@ import {
   Loader2, 
   CheckCircle2,
   AlertCircle,
+  X,
+  Copy,
   Plus,
   Type as TypeIcon,
   Layers,
@@ -17,12 +19,14 @@ import {
   Lightbulb,
   RefreshCw,
   RotateCcw,
-  Key
+  Key,
+  Upload,
+  Image as ImageIcon
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Book, Chapter, BookParameters, DEFAULT_PARAMETERS, ModelType } from "./types";
-import { generateToC, generateChapterContent, suggestParameters, generateCoverImage, refineChapterContent, generateInspiration, regenerateChapterInToC, generateWorksheets, generateCheatSheet, generateActionPlan } from "./services/geminiService";
-import { exportToMarkdown, exportToPDF, exportToEPUB } from "./services/exportService";
+import { generateToC, generateChapterContent, suggestParameters, generateCoverImage, refineChapterContent, generateInspiration, regenerateChapterInToC, generateWorksheets, generateCheatSheet, generateActionPlan, summarizeChapter } from "./services/geminiService";
+import { exportToMarkdown, exportToPDF, exportToEPUB, exportToCAsMarkdown } from "./services/exportService";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -67,6 +71,8 @@ export default function App() {
   const [step, setStep] = useState<"topic" | "toc" | "parameters" | "preview" | "generating" | "finished">("topic");
   const [topic, setTopic] = useState("");
   const [selectedCategory, setSelectedCategory] = useState(CATEGORIES[0]);
+  const [selectedCategory2, setSelectedCategory2] = useState("Keine zweite Kategorie");
+  const [wordFocus, setWordFocus] = useState("");
   const [toneValue, setToneValue] = useState(2); // Default: Neutral & Informativ
   const [preferredModel, setPreferredModel] = useState(DEFAULT_PARAMETERS.preferredModel);
   const [openRouterKey, setOpenRouterKey] = useState("");
@@ -78,6 +84,14 @@ export default function App() {
   const [feedback, setFeedback] = useState("");
   const [isRefining, setIsRefining] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [detailedError, setDetailedError] = useState<string | null>(null);
+
+  const handleError = (msg: string, err: any) => {
+    setError(msg);
+    const detail = err instanceof Error ? err.message : JSON.stringify(err, null, 2);
+    setDetailedError(detail);
+    console.error(msg, err);
+  };
 
   // Inspiration Generation
   const handleGenerateInspiration = async () => {
@@ -85,10 +99,17 @@ export default function App() {
     setIsInspirationLoading(true);
     setError(null);
     try {
-      const result = await generateInspiration(selectedCategory, TONES[toneValue], preferredModel, openRouterKey);
+      const result = await generateInspiration(
+        selectedCategory, 
+        selectedCategory2, 
+        wordFocus, 
+        TONES[toneValue], 
+        preferredModel, 
+        openRouterKey
+      );
       setTopic(result);
     } catch (err) {
-      setError("Fehler beim Generieren der Inspiration.");
+      handleError("Fehler beim Generieren der Inspiration.", err);
     } finally {
       setIsInspirationLoading(false);
     }
@@ -113,8 +134,7 @@ export default function App() {
       });
       setStep("toc");
     } catch (err) {
-      setError("Fehler beim Erstellen des Inhaltsverzeichnisses. Bitte versuche es erneut.");
-      console.error(err);
+      handleError("Fehler beim Erstellen des Inhaltsverzeichnisses. Bitte versuche es erneut.", err);
     } finally {
       setLoading(false);
     }
@@ -125,13 +145,84 @@ export default function App() {
     if (!book) return;
     setLoading(true);
     try {
-      const url = await generateCoverImage(book.title, book.topic);
+      const url = await generateCoverImage(book.title, book.topic, book.parameters.imageModel);
       setBook({ ...book, coverImageUrl: url });
     } catch (err) {
-      setError("Fehler bei der Cover-Generierung.");
+      handleError("Fehler bei der Cover-Generierung.", err);
     } finally {
       setLoading(false);
     }
+  };
+
+  // Cover Update
+  const handleUploadCover = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !book) return;
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setBook({ ...book, coverImageUrl: reader.result as string });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // ToC Export/Import
+  const handleExportToC = () => {
+    if (!book) return;
+    exportToCAsMarkdown(book.title, book.chapters);
+  };
+
+  const handleImportToC = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      if (!content) return;
+
+      // Simple MD Parser for ToC
+      // Expects: # Title\n\n## Kapitel X: Title\nDescription
+      const lines = content.split("\n");
+      let title = "Importiertes Buch";
+      const chapters: Chapter[] = [];
+      let currentChapter: Partial<Chapter> | null = null;
+
+      lines.forEach(line => {
+        if (line.startsWith("# Inhaltsverzeichnis: ")) {
+          title = line.replace("# Inhaltsverzeichnis: ", "").trim();
+        } else if (line.startsWith("## Kapitel ")) {
+          if (currentChapter && currentChapter.title) {
+            chapters.push(currentChapter as Chapter);
+          }
+          const chapterTitle = line.split(": ").slice(1).join(": ").trim();
+          currentChapter = {
+            id: `chapter-${chapters.length}`,
+            title: chapterTitle,
+            description: ""
+          };
+        } else if (currentChapter && line.trim() && !line.startsWith("#")) {
+          currentChapter.description = (currentChapter.description || "") + line.trim() + " ";
+        }
+      });
+
+      if (currentChapter && currentChapter.title) {
+        chapters.push(currentChapter as Chapter);
+      }
+
+      if (chapters.length > 0) {
+        setBook({
+          topic: title,
+          title: title,
+          chapters: chapters,
+          parameters: DEFAULT_PARAMETERS
+        });
+        setStep("toc");
+      } else {
+        handleError("Ungültiges Format. Das Inhaltsverzeichnis konnte nicht importiert werden.", new Error("Keine Kapitel gefunden"));
+      }
+    };
+    reader.readAsText(file);
   };
 
   // Parameter Update
@@ -159,7 +250,7 @@ export default function App() {
         chapters: tocResult.chapters
       });
     } catch (err) {
-      setError("Fehler beim Regenerieren des Inhaltsverzeichnisses.");
+      handleError("Fehler beim Regenerieren des Inhaltsverzeichnisses.", err);
     } finally {
       setLoading(false);
     }
@@ -186,7 +277,7 @@ export default function App() {
       updatedChapters[chapterIndex] = newChapter;
       setBook({ ...book, chapters: updatedChapters });
     } catch (err) {
-      setError("Fehler beim Regenerieren des Kapitels.");
+      handleError("Fehler beim Regenerieren des Kapitels.", err);
     } finally {
       setLoading(false);
     }
@@ -206,8 +297,7 @@ export default function App() {
       setPreviewContent(content);
       setStep("preview");
     } catch (err) {
-      setError("Fehler bei der Kapitel-Generierung.");
-      console.error(err);
+      handleError("Fehler bei der Kapitel-Generierung.", err);
     } finally {
       setLoading(false);
     }
@@ -222,7 +312,7 @@ export default function App() {
       setPreviewContent(refined);
       setFeedback("");
     } catch (err) {
-      setError("Fehler bei der Überarbeitung.");
+      handleError("Fehler bei der Überarbeitung.", err);
     } finally {
       setIsRefining(false);
     }
@@ -234,6 +324,11 @@ export default function App() {
     setStep("generating");
     setLoading(true);
     
+    const startTime = new Date().toISOString();
+    let totalRequests = 0;
+    let totalWords = 0;
+    let previousContext = "";
+    
     const updatedChapters = [...book.chapters];
     
     try {
@@ -241,15 +336,33 @@ export default function App() {
 
       // Ensure cover is generated if not already
       if (!currentBook.coverImageUrl) {
-        const url = await generateCoverImage(currentBook.title, currentBook.topic);
+        const url = await generateCoverImage(currentBook.title, currentBook.topic, currentBook.parameters.imageModel);
+        totalRequests++;
         currentBook.coverImageUrl = url;
         setBook(currentBook);
       }
 
       for (let i = 0; i < updatedChapters.length; i++) {
         const chapter = updatedChapters[i];
-        const content = await generateChapterContent(currentBook.title, chapter, currentBook.parameters, currentBook.chapters);
+        const content = await generateChapterContent(
+          currentBook.title, 
+          chapter, 
+          currentBook.parameters, 
+          currentBook.chapters,
+          previousContext
+        );
+        totalRequests++;
+        totalWords += content.split(/\s+/).length;
+        
         updatedChapters[i] = { ...chapter, content };
+        
+        // Summarize for next chapter context
+        if (i < updatedChapters.length - 1) {
+          const summary = await summarizeChapter(chapter.title, content, 'gemini-3-flash-preview', currentBook.parameters.openRouterKey);
+          totalRequests++;
+          previousContext += `Kapitel ${i + 1} (${chapter.title}): ${summary}\n`;
+        }
+
         currentBook = { ...currentBook, chapters: [...updatedChapters] };
         setBook(currentBook);
       }
@@ -257,24 +370,38 @@ export default function App() {
       // Generate additional materials
       if (currentBook.parameters.generateWorksheets) {
         const worksheets = await generateWorksheets(currentBook);
+        totalRequests++;
+        totalWords += worksheets.split(/\s+/).length;
         currentBook = { ...currentBook, worksheets };
         setBook(currentBook);
       }
       if (currentBook.parameters.generateCheatSheet) {
         const cheatSheet = await generateCheatSheet(currentBook);
+        totalRequests++;
+        totalWords += cheatSheet.split(/\s+/).length;
         currentBook = { ...currentBook, cheatSheet };
         setBook(currentBook);
       }
       if (currentBook.parameters.generateActionPlan) {
         const actionPlan = await generateActionPlan(currentBook);
+        totalRequests++;
+        totalWords += actionPlan.split(/\s+/).length;
         currentBook = { ...currentBook, actionPlan };
         setBook(currentBook);
       }
 
+      currentBook.generationMetadata = {
+        totalRequests,
+        startTime,
+        endTime: new Date().toISOString(),
+        totalWordsGenerated: totalWords,
+        modelUsed: currentBook.parameters.preferredModel
+      };
+      setBook(currentBook);
+
       setStep("finished");
     } catch (err) {
-      setError("Fehler bei der vollständigen Bucherstellung.");
-      console.error(err);
+      handleError("Fehler bei der vollständigen Bucherstellung.", err);
     } finally {
       setLoading(false);
     }
@@ -303,6 +430,52 @@ export default function App() {
       </header>
 
       <main className="max-w-2xl mx-auto px-6 py-12">
+        {/* Error Display */}
+        <AnimatePresence>
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="mb-8 overflow-hidden"
+            >
+              <div className="bg-red-50 border border-red-100 rounded-2xl p-6 space-y-4">
+                <div className="flex items-start gap-3 text-red-800">
+                  <AlertCircle className="shrink-0 mt-0.5" size={20} />
+                  <div className="space-y-1">
+                    <p className="font-bold">{error}</p>
+                    <p className="text-sm opacity-80">Ein Problem ist aufgetreten. Bitte prüfe die Details unten oder versuche es erneut.</p>
+                  </div>
+                  <button 
+                    onClick={() => { setError(null); setDetailedError(null); }}
+                    className="ml-auto text-red-400 hover:text-red-600 transition-colors"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+                
+                {detailedError && (
+                  <div className="bg-white/50 rounded-xl p-4 border border-red-100">
+                    <label className="block text-[10px] uppercase tracking-widest font-bold text-red-400 mb-2">Technische Details (für Support kopieren)</label>
+                    <pre className="text-[10px] font-mono text-red-900 whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
+                      {detailedError}
+                    </pre>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(detailedError);
+                        // Optional: Show a "Copied" toast or feedback
+                      }}
+                      className="mt-3 flex items-center gap-2 text-[10px] font-bold text-red-600 hover:text-red-800 transition-colors"
+                    >
+                      <Copy size={12} /> Details kopieren
+                    </button>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <AnimatePresence mode="wait">
           {/* Step 1: Topic Input */}
           {step === "topic" && (
@@ -340,16 +513,14 @@ export default function App() {
                       <option value="gemini-3.1-flash-live-preview">Gemini 3.1 Flash Live (Echtzeit)</option>
                     </optgroup>
                     <optgroup label="OpenRouter (Gratis Modelle)">
-                      <option value="openrouter/google/gemini-2.0-flash-lite-preview-02-05:free">Gemini 2.0 Flash Lite (Free)</option>
-                      <option value="openrouter/mistralai/mistral-7b-instruct:free">Mistral 7B Instruct (Free)</option>
-                      <option value="openrouter/huggingfaceh4/zephyr-7b-beta:free">Zephyr 7B Beta (Free)</option>
-                      <option value="openrouter/openchat/openchat-7b:free">OpenChat 7B (Free)</option>
-                      <option value="openrouter/gryphe/mythomist-7b:free">MythoMist 7B (Free)</option>
-                      <option value="openrouter/qwen/qwen3.6-plus:free">Qwen 3.6 Plus (Free)</option>
-                      <option value="openrouter/nvidia/llama-nemotron-embed-vl-1b-v2:free">Llama Nemotron 1B (Free)</option>
+                      <option value="openrouter/openai/gpt-oss-120b:free">GPT OSS 120B (Free)</option>
+                      <option value="openrouter/deepseek/deepseek-r1:free">DeepSeek R1 (Free)</option>
+                      <option value="openrouter/deepseek/deepseek-chat:free">DeepSeek V3 (Free)</option>
+                      <option value="openrouter/meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B (Free)</option>
+                      <option value="openrouter/qwen/qwen-2.5-72b-instruct:free">Qwen 2.5 72B (Free)</option>
                       <option value="openrouter/minimax/minimax-m2.5:free">MiniMax M2.5 (Free)</option>
                       <option value="openrouter/z-ai/glm-4.5-air:free">GLM 4.5 Air (Free)</option>
-                      <option value="openrouter/openai/gpt-oss-120b:free">GPT OSS 120B (Free)</option>
+                      <option value="openrouter/qwen/qwen3.6-plus:free">Qwen 3.6 Plus (Free)</option>
                     </optgroup>
                   </select>
                   
@@ -374,17 +545,48 @@ export default function App() {
                 </div>
 
                 {/* Category Selection */}
-                <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-4">
-                  <label className="block text-xs uppercase tracking-widest font-bold text-stone-400">Kategorie</label>
-                  <select 
-                    value={selectedCategory}
-                    onChange={(e) => setSelectedCategory(e.target.value)}
-                    className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20 text-lg font-medium"
-                  >
-                    {CATEGORIES.map(cat => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                  </select>
+                <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="block text-xs uppercase tracking-widest font-bold text-stone-400">Kategorie 1</label>
+                      <select 
+                        value={selectedCategory}
+                        onChange={(e) => setSelectedCategory(e.target.value)}
+                        className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20 text-lg font-medium"
+                      >
+                        {CATEGORIES.map(cat => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-xs uppercase tracking-widest font-bold text-stone-400">Kategorie 2 (Optional)</label>
+                      <select 
+                        value={selectedCategory2}
+                        onChange={(e) => setSelectedCategory2(e.target.value)}
+                        className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20 text-lg font-medium"
+                      >
+                        <option value="Keine zweite Kategorie">Keine zweite Kategorie</option>
+                        {CATEGORIES.filter(c => c !== CATEGORIES[0]).map(cat => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs uppercase tracking-widest font-bold text-stone-400">Wortfokus (Optional)</label>
+                    <input 
+                      type="text"
+                      value={wordFocus}
+                      onChange={(e) => setWordFocus(e.target.value)}
+                      placeholder="Z.B. 'Quantenphysik', 'Mittelalter', 'Liebe'..."
+                      className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20 text-lg font-medium"
+                    />
+                    <p className="text-[10px] text-stone-400 italic">
+                      Dieses Wort beeinflusst die Themenfindung der KI maßgeblich.
+                    </p>
+                  </div>
                 </div>
 
                 {/* Tone Slider & Inspiration Button (only if not "Eigenes Thema") */}
@@ -454,6 +656,13 @@ export default function App() {
                 {loading ? <Loader2 className="animate-spin" /> : <Sparkles size={18} />}
                 Buchprojekt starten
               </button>
+
+              <div className="pt-4 border-t border-stone-100">
+                <label className="w-full py-3 border border-stone-200 rounded-xl text-stone-500 hover:bg-stone-50 transition-all flex items-center justify-center gap-2 cursor-pointer text-sm font-medium">
+                  <Upload size={16} /> Inhaltsverzeichnis importieren (.md)
+                  <input type="file" accept=".md" onChange={handleImportToC} className="hidden" />
+                </label>
+              </div>
             </motion.div>
           )}
 
@@ -485,7 +694,22 @@ export default function App() {
 
               <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden shadow-sm">
                 <div className="p-4 bg-stone-50 border-b border-stone-200 flex items-center justify-between">
-                  <span className="text-xs uppercase tracking-widest font-bold text-stone-400">Inhaltsverzeichnis</span>
+                  <div className="flex items-center gap-4">
+                    <span className="text-xs uppercase tracking-widest font-bold text-stone-400">Inhaltsverzeichnis</span>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={handleExportToC}
+                        className="p-1.5 text-stone-400 hover:text-orange-500 hover:bg-orange-50 rounded-md transition-all"
+                        title="Inhaltsverzeichnis exportieren"
+                      >
+                        <Download size={14} />
+                      </button>
+                      <label className="p-1.5 text-stone-400 hover:text-orange-500 hover:bg-orange-50 rounded-md transition-all cursor-pointer" title="Inhaltsverzeichnis importieren">
+                        <Upload size={14} />
+                        <input type="file" accept=".md" onChange={handleImportToC} className="hidden" />
+                      </label>
+                    </div>
+                  </div>
                   <span className="text-xs font-mono text-stone-400">{book.chapters.length} Kapitel</span>
                 </div>
                 <div className="divide-y divide-stone-100">
@@ -510,6 +734,78 @@ export default function App() {
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              {/* Cover Preview & Selection (Moved to ToC Step for better visibility) */}
+              <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
+                    <Sparkles size={14} /> Buchcover
+                  </h3>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+                  {/* Preview Area */}
+                  <div className="space-y-4">
+                    {book.coverImageUrl ? (
+                      <div className="relative group aspect-[3/4] w-full max-w-[240px] mx-auto overflow-hidden rounded-xl shadow-lg border border-stone-100">
+                        <img src={book.coverImageUrl} alt="Cover" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-3">
+                          <button 
+                            onClick={handleGenerateCover}
+                            className="px-4 py-2 bg-white text-stone-900 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-orange-500 hover:text-white transition-all"
+                          >
+                            <Sparkles size={14} /> Neu generieren
+                          </button>
+                          <label className="px-4 py-2 bg-white/20 backdrop-blur-sm text-white border border-white/30 rounded-lg font-bold text-sm flex items-center gap-2 hover:bg-white/40 transition-all cursor-pointer">
+                            <Upload size={14} /> Eigenes Bild
+                            <input type="file" accept="image/*" onChange={handleUploadCover} className="hidden" />
+                          </label>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-3">
+                        <button 
+                          onClick={handleGenerateCover}
+                          className="w-full py-12 border-2 border-dashed border-stone-200 rounded-2xl text-stone-400 hover:border-orange-500 hover:text-orange-500 transition-all flex flex-col items-center gap-2"
+                        >
+                          <Plus size={24} />
+                          <span className="font-bold">Cover generieren</span>
+                        </button>
+                        <label className="w-full py-4 border border-stone-200 rounded-xl text-stone-500 hover:bg-stone-50 transition-all flex items-center justify-center gap-2 cursor-pointer text-sm font-medium">
+                          <Upload size={16} /> Eigenes Cover hochladen
+                          <input type="file" accept="image/*" onChange={handleUploadCover} className="hidden" />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Controls Area */}
+                  <div className="space-y-6">
+                    <div className="space-y-3">
+                      <label className="block text-sm font-medium text-stone-600 flex items-center gap-2">
+                        <ImageIcon size={14} className="text-stone-400" /> Bild-KI Modell
+                      </label>
+                      <select 
+                        value={book.parameters.imageModel}
+                        onChange={(e) => updateParams({ imageModel: e.target.value as any })}
+                        className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
+                      >
+                        <option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image (Standard)</option>
+                        <option value="gemini-2.0-flash-exp-image">Gemini 2.0 Flash Exp Image</option>
+                      </select>
+                      <p className="text-[10px] text-stone-400 leading-tight">
+                        Wähle die KI aus, die das Coverbild für dich entwerfen soll.
+                      </p>
+                    </div>
+
+                    <div className="p-4 bg-orange-50 rounded-xl border border-orange-100">
+                      <p className="text-xs text-orange-800 leading-relaxed">
+                        <strong>Tipp:</strong> Du kannst jederzeit ein eigenes Bild hochladen oder die KI ein neues generieren lassen.
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -540,32 +836,6 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 gap-6">
-                {/* Cover Preview */}
-                <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-4">
-                  <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
-                    <Sparkles size={14} /> Buchcover
-                  </h3>
-                  {book.coverImageUrl ? (
-                    <div className="relative group aspect-[3/4] max-w-[200px] mx-auto overflow-hidden rounded-xl shadow-lg border border-stone-100">
-                      <img src={book.coverImageUrl} alt="Cover" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                      <button 
-                        onClick={handleGenerateCover}
-                        className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white font-bold gap-2"
-                      >
-                        <Sparkles size={18} /> Neu generieren
-                      </button>
-                    </div>
-                  ) : (
-                    <button 
-                      onClick={handleGenerateCover}
-                      className="w-full py-8 border-2 border-dashed border-stone-200 rounded-2xl text-stone-400 hover:border-orange-500 hover:text-orange-500 transition-all flex flex-col items-center gap-2"
-                    >
-                      <Plus size={24} />
-                      <span className="font-bold">Cover generieren</span>
-                    </button>
-                  )}
-                </div>
-
                 {/* Target Audience & Perspective */}
                 <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-6">
                   <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
@@ -943,7 +1213,7 @@ export default function App() {
                 <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400">Export-Optionen</h3>
                 <div className="grid grid-cols-1 gap-3">
                   <button
-                    onClick={() => exportToMarkdown(book.title, fullBookMarkdown, book.coverImageUrl)}
+                    onClick={() => exportToMarkdown(book.title, fullBookMarkdown, book.coverImageUrl, book.chapters)}
                     className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl font-bold flex items-center justify-between hover:bg-stone-100 transition-all"
                   >
                     <div className="flex items-center gap-3">
@@ -953,7 +1223,7 @@ export default function App() {
                     <Download size={18} className="text-stone-300" />
                   </button>
                   <button
-                    onClick={() => exportToPDF(book.title, fullBookMarkdown, book.coverImageUrl)}
+                    onClick={() => exportToPDF(book.title, fullBookMarkdown, book.coverImageUrl, book.chapters)}
                     className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl font-bold flex items-center justify-between hover:bg-stone-100 transition-all"
                   >
                     <div className="flex items-center gap-3">
@@ -1075,6 +1345,34 @@ export default function App() {
                           </button>
                         </div>
                       </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {book.generationMetadata && (
+                <div className="bg-stone-50 p-6 border border-stone-200 rounded-2xl space-y-4">
+                  <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
+                    <Settings size={14} /> Generierungs-Metadaten
+                  </h3>
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div className="space-y-1">
+                      <span className="text-stone-400 block">Requests gesamt:</span>
+                      <span className="font-mono font-bold">{book.generationMetadata.totalRequests}</span>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-stone-400 block">Wörter gesamt:</span>
+                      <span className="font-mono font-bold">{book.generationMetadata.totalWordsGenerated.toLocaleString()}</span>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-stone-400 block">Dauer:</span>
+                      <span className="font-mono font-bold">
+                        {Math.round((new Date(book.generationMetadata.endTime!).getTime() - new Date(book.generationMetadata.startTime).getTime()) / 1000)}s
+                      </span>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-stone-400 block">Modell:</span>
+                      <span className="font-mono font-bold">{book.generationMetadata.modelUsed}</span>
                     </div>
                   </div>
                 </div>
