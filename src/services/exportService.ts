@@ -1,7 +1,39 @@
 import { jsPDF } from "jspdf";
 import JSZip from "jszip";
+import { BookParameters, GenerationMetadata } from "../types";
 
-export const exportToMarkdown = (title: string, content: string, coverUrl?: string, chapters?: { title: string }[]) => {
+const generateMetadataMarkdown = (title: string, params: BookParameters, metadata?: GenerationMetadata) => {
+  return `
+---
+# Metadaten zur Erstellung
+**Buchtitel:** ${title}
+**Erstellungsdatum:** ${new Date().toLocaleDateString('de-DE')}
+**Text-Modell:** ${params.preferredModel}
+**Bild-Modell:** ${params.imageModel}
+**Gesamt-Wortzahl:** ${metadata?.totalWordsGenerated || 'Unbekannt'}
+**Anzahl der KI-Anfragen:** ${metadata?.totalRequests || 'Unbekannt'}
+
+### Verwendete Parameter:
+- **Zielgruppe:** ${params.targetAudience}
+- **Erzählperspektive:** ${params.narrativePerspective}
+- **Sprachstil:** ${params.languageStyle}
+- **Lokalisierung:** ${params.localization}
+- **Struktur:** ${params.structureType}
+- **Persona:** ${params.persona}
+- **Interaktivität:** Stufe ${params.interactivity} von 4
+- **Zusatzmaterialien:** ${[
+    params.generateWorksheets ? "Arbeitsblätter" : "",
+    params.generateCheatSheet ? "Spickzettel" : "",
+    params.generateActionPlan ? "Aktionsplan" : "",
+    params.generateChapterImages ? "Kapitelbilder" : ""
+  ].filter(Boolean).join(", ") || "Keine"}
+
+*Dieses Buch wurde mit dem AI Book Architect erstellt.*
+---
+`;
+};
+
+export const exportToMarkdown = (title: string, content: string, coverUrl?: string, chapters?: { title: string }[], params?: BookParameters, metadata?: GenerationMetadata) => {
   let fullContent = `# ${title}\n\n`;
   if (coverUrl) {
     fullContent += `![Cover](${coverUrl})\n\n`;
@@ -16,6 +48,10 @@ export const exportToMarkdown = (title: string, content: string, coverUrl?: stri
   }
 
   fullContent += content;
+
+  if (params?.includeMetadataPage) {
+    fullContent += `\n\n${generateMetadataMarkdown(title, params, metadata)}`;
+  }
   
   const blob = new Blob([fullContent], { type: "text/markdown" });
   const url = URL.createObjectURL(blob);
@@ -41,7 +77,7 @@ export const exportToCAsMarkdown = (title: string, chapters: { title: string; de
   URL.revokeObjectURL(url);
 };
 
-export const exportToPDF = async (title: string, content: string, coverUrl?: string, chapters?: { title: string }[]) => {
+export const exportToPDF = async (title: string, content: string, coverUrl?: string, chapters?: { title: string; imageUrl?: string }[], params?: BookParameters, metadata?: GenerationMetadata) => {
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
@@ -92,6 +128,8 @@ export const exportToPDF = async (title: string, content: string, coverUrl?: str
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
 
+  let currentChapterIndex = -1;
+
   lines.forEach((line) => {
     if (!line.trim()) {
       y += 5; // Paragraph spacing
@@ -110,6 +148,19 @@ export const exportToPDF = async (title: string, content: string, coverUrl?: str
       currentSize = 16;
       cleanLine = line.replace("## ", "");
       y += 10;
+      currentChapterIndex++;
+      
+      // Check for chapter image
+      if (chapters && chapters[currentChapterIndex] && chapters[currentChapterIndex].imageUrl) {
+        try {
+          // Add image before chapter title or after? Let's do after.
+          // But first check if we need a new page for the title
+          if (y > 250) {
+            doc.addPage();
+            y = 20;
+          }
+        } catch (e) {}
+      }
     } else if (line.startsWith("# ")) {
       currentStyle = "bold";
       currentSize = 20;
@@ -132,7 +183,65 @@ export const exportToPDF = async (title: string, content: string, coverUrl?: str
 
     doc.text(splitLines, margin, y);
     y += (splitLines.length * 7);
+
+    // If it was a chapter title, add the image now
+    if (line.startsWith("## ") && chapters && chapters[currentChapterIndex] && chapters[currentChapterIndex].imageUrl) {
+      try {
+        const imgUrl = chapters[currentChapterIndex].imageUrl!;
+        // Aspect ratio 16:9
+        const imgHeight = maxLineWidth * (9/16);
+        if (y + imgHeight > 270) {
+          doc.addPage();
+          y = 20;
+        }
+        doc.addImage(imgUrl, 'PNG', margin, y, maxLineWidth, imgHeight);
+        y += imgHeight + 10;
+      } catch (e) {
+        console.error("Error adding chapter image to PDF", e);
+      }
+    }
   });
+
+  // Metadata Page in PDF
+  if (params?.includeMetadataPage) {
+    doc.addPage();
+    y = 30;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.text("Metadaten zur Erstellung", margin, y);
+    y += 15;
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "normal");
+    
+    const metaLines = [
+      `Buchtitel: ${title}`,
+      `Erstellungsdatum: ${new Date().toLocaleDateString('de-DE')}`,
+      `Text-Modell: ${params.preferredModel}`,
+      `Bild-Modell: ${params.imageModel}`,
+      `Gesamt-Wortzahl: ${metadata?.totalWordsGenerated || 'Unbekannt'}`,
+      `Anzahl der KI-Anfragen: ${metadata?.totalRequests || 'Unbekannt'}`,
+      "",
+      "Verwendete Parameter:",
+      `- Zielgruppe: ${params.targetAudience}`,
+      `- Erzählperspektive: ${params.narrativePerspective}`,
+      `- Sprachstil: ${params.languageStyle}`,
+      `- Lokalisierung: ${params.localization}`,
+      `- Struktur: ${params.structureType}`,
+      `- Persona: ${params.persona}`,
+      `- Interaktivität: Stufe ${params.interactivity} von 4`,
+      `- Zusatzmaterialien: ${[
+        params.generateWorksheets ? "Arbeitsblätter" : "",
+        params.generateCheatSheet ? "Spickzettel" : "",
+        params.generateActionPlan ? "Aktionsplan" : "",
+        params.generateChapterImages ? "Kapitelbilder" : ""
+      ].filter(Boolean).join(", ") || "Keine"}`
+    ];
+
+    metaLines.forEach(line => {
+      doc.text(line, margin, y);
+      y += 7;
+    });
+  }
   
   doc.save(`${title.replace(/\s+/g, "_")}.pdf`);
 };
@@ -147,7 +256,7 @@ const mdToHtml = (md: string) => {
     .replace(/<br\/><br\/>/gim, '</p><p>');
 };
 
-export const exportToEPUB = async (title: string, chapters: { title: string; content: string }[], coverUrl?: string) => {
+export const exportToEPUB = async (title: string, chapters: { title: string; content: string; imageUrl?: string }[], coverUrl?: string, params?: BookParameters, metadata?: GenerationMetadata) => {
   const zip = new JSZip();
   
   zip.file("mimetype", "application/epub+zip");
@@ -185,11 +294,26 @@ export const exportToEPUB = async (title: string, chapters: { title: string; con
     spineItems += `<itemref idref="cover"/>\n`;
   }
 
+  // Add chapter images to manifest
+  chapters.forEach((ch, i) => {
+    if (ch.imageUrl) {
+      const base64Data = ch.imageUrl.split(',')[1];
+      const imgName = `chapter_img_${i}.png`;
+      oebps?.file(imgName, base64Data, { base64: true });
+      manifestItems += `<item id="img${i}" href="${imgName}" media-type="image/png"/>\n`;
+    }
+  });
+
   // Table of Contents Page (Visible)
   chapters.forEach((ch, i) => {
     navItems += `<li><a href="chapter_${i}.xhtml">${ch.title}</a></li>\n`;
     tocHtmlItems += `<li><a href="chapter_${i}.xhtml">${ch.title}</a></li>\n`;
   });
+
+  if (params?.includeMetadataPage) {
+    navItems += `<li><a href="metadata.xhtml">Metadaten</a></li>\n`;
+    tocHtmlItems += `<li><a href="metadata.xhtml">Metadaten</a></li>\n`;
+  }
 
   const tocXhtml = `<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -233,6 +357,8 @@ export const exportToEPUB = async (title: string, chapters: { title: string; con
   chapters.forEach((ch, i) => {
     const fileName = `chapter_${i}.xhtml`;
     const htmlContent = mdToHtml(ch.content);
+    const imgHtml = ch.imageUrl ? `<div style="text-align:center;margin:2em 0;"><img src="chapter_img_${i}.png" style="max-width:100%;height:auto;border-radius:8px;" /></div>` : "";
+    
     const xhtml = `<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -247,6 +373,7 @@ export const exportToEPUB = async (title: string, chapters: { title: string; con
 </head>
 <body>
   <h1>${ch.title}</h1>
+  ${imgHtml}
   <div class="content">
     <p>${htmlContent}</p>
   </div>
@@ -256,6 +383,54 @@ export const exportToEPUB = async (title: string, chapters: { title: string; con
     manifestItems += `<item id="ch${i}" href="${fileName}" media-type="application/xhtml+xml"/>\n`;
     spineItems += `<itemref idref="ch${i}"/>\n`;
   });
+
+  // Metadata Page in EPUB
+  if (params?.includeMetadataPage) {
+    const metadataXhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>Metadaten zur Erstellung</title>
+  <style>
+    body { font-family: sans-serif; line-height: 1.6; padding: 5%; }
+    h1 { color: #333; border-bottom: 1px solid #eee; }
+    ul { list-style: none; padding: 0; }
+    li { margin: 5px 0; }
+    .label { font-weight: bold; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Metadaten zur Erstellung</h1>
+  <p><span class="label">Buchtitel:</span> ${title}</p>
+  <p><span class="label">Erstellungsdatum:</span> ${new Date().toLocaleDateString('de-DE')}</p>
+  <p><span class="label">Text-Modell:</span> ${params.preferredModel}</p>
+  <p><span class="label">Bild-Modell:</span> ${params.imageModel}</p>
+  <p><span class="label">Gesamt-Wortzahl:</span> ${metadata?.totalWordsGenerated || 'Unbekannt'}</p>
+  <p><span class="label">Anzahl der KI-Anfragen:</span> ${metadata?.totalRequests || 'Unbekannt'}</p>
+  
+  <h2>Verwendete Parameter:</h2>
+  <ul>
+    <li><span class="label">Zielgruppe:</span> ${params.targetAudience}</li>
+    <li><span class="label">Erzählperspektive:</span> ${params.narrativePerspective}</li>
+    <li><span class="label">Sprachstil:</span> ${params.languageStyle}</li>
+    <li><span class="label">Lokalisierung:</span> ${params.localization}</li>
+    <li><span class="label">Struktur:</span> ${params.structureType}</li>
+    <li><span class="label">Persona:</span> ${params.persona}</li>
+    <li><span class="label">Interaktivität:</span> Stufe ${params.interactivity} von 4</li>
+    <li><span class="label">Zusatzmaterialien:</span> ${[
+      params.generateWorksheets ? "Arbeitsblätter" : "",
+      params.generateCheatSheet ? "Spickzettel" : "",
+      params.generateActionPlan ? "Aktionsplan" : "",
+      params.generateChapterImages ? "Kapitelbilder" : ""
+    ].filter(Boolean).join(", ") || "Keine"}</li>
+  </ul>
+  
+  <p style="margin-top: 2em; font-style: italic; color: #999;">Dieses Buch wurde mit dem AI Book Architect erstellt.</p>
+</body>
+</html>`;
+    oebps?.file("metadata.xhtml", metadataXhtml);
+    manifestItems += `<item id="metadata" href="metadata.xhtml" media-type="application/xhtml+xml"/>\n`;
+    spineItems += `<itemref idref="metadata"/>\n`;
+  }
   
   const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="pub-id" version="3.0">

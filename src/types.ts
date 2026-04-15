@@ -3,6 +3,7 @@ export type NarrativePerspective = 'FirstPerson' | 'SecondPerson' | 'ThirdPerson
 export type LanguageStyle = 'Casual' | 'Neutral' | 'Academic';
 export type Localization = 'DACH' | 'US' | 'Global';
 export type StructureType = 'Chronological' | 'ProblemSolution' | 'Modular';
+export type PersonaType = 'Default' | 'Philosopher' | 'TechBlogger' | 'Journalist' | 'Storyteller' | 'Professor';
 
 export type ModelType = 
   | 'gemini-3.1-pro-preview' 
@@ -43,10 +44,14 @@ export interface BookParameters {
   localization: Localization;
   interactivity: number; // 0-4
   structureType: StructureType;
+  persona: PersonaType;
   // Additional materials
   generateWorksheets: boolean;
   generateCheatSheet: boolean;
   generateActionPlan: boolean;
+  generateChapterImages: boolean;
+  includeMetadataPage: boolean;
+  outputLanguage: 'German' | 'English' | 'Spanish';
 }
 
 export interface Chapter {
@@ -54,6 +59,7 @@ export interface Chapter {
   title: string;
   description: string;
   content?: string;
+  imageUrl?: string;
   isGenerating?: boolean;
 }
 
@@ -78,6 +84,13 @@ export interface Book {
   generationMetadata?: GenerationMetadata;
 }
 
+export interface MindMapNode {
+  id: string;
+  label: string;
+  description: string;
+  color?: string;
+}
+
 export const DEFAULT_PARAMETERS: BookParameters = {
   useExamples: true,
   reflectionQuestions: false,
@@ -97,7 +110,11 @@ export const DEFAULT_PARAMETERS: BookParameters = {
   localization: 'Global',
   interactivity: 2,
   structureType: 'Chronological',
+  persona: 'Default',
   generateWorksheets: false,
   generateCheatSheet: false,
   generateActionPlan: false,
+  generateChapterImages: false,
+  includeMetadataPage: false,
+  outputLanguage: 'German',
 };

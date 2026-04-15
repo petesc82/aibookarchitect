@@ -24,8 +24,8 @@ import {
   Image as ImageIcon
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { Book, Chapter, BookParameters, DEFAULT_PARAMETERS, ModelType } from "./types";
-import { generateToC, generateChapterContent, suggestParameters, generateCoverImage, refineChapterContent, generateInspiration, regenerateChapterInToC, generateWorksheets, generateCheatSheet, generateActionPlan, summarizeChapter } from "./services/geminiService";
+import { Book, Chapter, BookParameters, DEFAULT_PARAMETERS, ModelType, MindMapNode } from "./types";
+import { generateToC, generateChapterContent, suggestParameters, generateCoverImage, generateChapterImage, refineChapterContent, generateInspiration, regenerateChapterInToC, generateWorksheets, generateCheatSheet, generateActionPlan, summarizeChapter, generateMindMap, refineTopicSuggestions, type TopicRefinement } from "./services/geminiService";
 import { exportToMarkdown, exportToPDF, exportToEPUB, exportToCAsMarkdown } from "./services/exportService";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -55,7 +55,20 @@ const CATEGORIES = [
   "Garten & Natur",
   "Philosophie",
   "Psychologie",
-  "IT & Programmierung"
+  "IT & Programmierung",
+  "Nachhaltigkeit & Klima",
+  "Astronomie & Weltraum",
+  "Mythologie & Sagen",
+  "True Crime & Forensik",
+  "Minimalismus & Lifestyle",
+  "Spiritualität & Achtsamkeit",
+  "Architektur & Städtebau",
+  "Musik & Musikgeschichte",
+  "Sport & Olympische Spiele",
+  "Mode & Kostümkunde",
+  "Sprachen & Linguistik",
+  "E-Sport & Gaming-Kultur",
+  "Künstliche Intelligenz & Ethik"
 ];
 
 const TONES = [
@@ -85,6 +98,10 @@ export default function App() {
   const [isRefining, setIsRefining] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detailedError, setDetailedError] = useState<string | null>(null);
+  const [mindMapNodes, setMindMapNodes] = useState<MindMapNode[]>([]);
+  const [isMindMapLoading, setIsMindMapLoading] = useState(false);
+  const [topicRefinements, setTopicRefinements] = useState<TopicRefinement[]>([]);
+  const [isRefiningTopic, setIsRefiningTopic] = useState(false);
 
   const handleError = (msg: string, err: any) => {
     setError(msg);
@@ -105,13 +122,49 @@ export default function App() {
         wordFocus, 
         TONES[toneValue], 
         preferredModel, 
-        openRouterKey
+        openRouterKey,
+        book?.parameters.outputLanguage || 'German'
       );
       setTopic(result);
     } catch (err) {
       handleError("Fehler beim Generieren der Inspiration.", err);
     } finally {
       setIsInspirationLoading(false);
+    }
+  };
+
+  const handleGenerateMindMap = async () => {
+    if (!wordFocus.trim() && selectedCategory === CATEGORIES[0]) return;
+    setIsMindMapLoading(true);
+    setError(null);
+    try {
+      const nodes = await generateMindMap(
+        wordFocus || selectedCategory,
+        selectedCategory,
+        selectedCategory2,
+        preferredModel,
+        openRouterKey,
+        book?.parameters.outputLanguage || 'German'
+      );
+      setMindMapNodes(nodes);
+    } catch (err) {
+      handleError("Fehler beim Generieren der Mind-Map.", err);
+    } finally {
+      setIsMindMapLoading(false);
+    }
+  };
+
+  const handleRefineTopicSuggestions = async () => {
+    if (!topic.trim()) return;
+    setIsRefiningTopic(true);
+    setError(null);
+    try {
+      const refinements = await refineTopicSuggestions(topic, preferredModel, openRouterKey, book?.parameters.outputLanguage || 'German');
+      setTopicRefinements(refinements);
+    } catch (err) {
+      handleError("Fehler beim Generieren der Themen-Vorschläge.", err);
+    } finally {
+      setIsRefiningTopic(false);
     }
   };
 
@@ -122,7 +175,7 @@ export default function App() {
     setError(null);
     try {
       const [tocResult, suggestedParams] = await Promise.all([
-        generateToC(topic, preferredModel, openRouterKey),
+        generateToC(topic, preferredModel, openRouterKey, 'German'),
         suggestParameters(topic, openRouterKey)
       ]);
       
@@ -243,7 +296,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const tocResult = await generateToC(book.topic, preferredModel, openRouterKey);
+      const tocResult = await generateToC(book.topic, preferredModel, openRouterKey, book.parameters.outputLanguage);
       setBook({
         ...book,
         title: tocResult.title,
@@ -271,7 +324,8 @@ export default function App() {
         book.chapters[chapterIndex],
         book.chapters,
         preferredModel,
-        openRouterKey
+        openRouterKey,
+        book.parameters.outputLanguage
       );
       const updatedChapters = [...book.chapters];
       updatedChapters[chapterIndex] = newChapter;
@@ -356,9 +410,25 @@ export default function App() {
         
         updatedChapters[i] = { ...chapter, content };
         
+        // Generate chapter image if requested
+        if (currentBook.parameters.generateChapterImages) {
+          try {
+            const chapterImageUrl = await generateChapterImage(
+              currentBook.title,
+              chapter.title,
+              chapter.description,
+              currentBook.parameters.imageModel
+            );
+            totalRequests++;
+            updatedChapters[i].imageUrl = chapterImageUrl;
+          } catch (imgErr) {
+            console.warn(`Chapter image generation failed for ${chapter.title}`, imgErr);
+          }
+        }
+        
         // Summarize for next chapter context
         if (i < updatedChapters.length - 1) {
-          const summary = await summarizeChapter(chapter.title, content, 'gemini-3-flash-preview', currentBook.parameters.openRouterKey);
+          const summary = await summarizeChapter(chapter.title, content, 'gemini-3-flash-preview', currentBook.parameters.openRouterKey, currentBook.parameters.outputLanguage);
           totalRequests++;
           previousContext += `Kapitel ${i + 1} (${chapter.title}): ${summary}\n`;
         }
@@ -627,17 +697,100 @@ export default function App() {
                   </motion.div>
                 )}
 
+                {/* Mind Map Section */}
+                {(wordFocus.trim() || selectedCategory !== CATEGORIES[0]) && (
+                  <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-6">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
+                        <Sparkles size={14} className="text-orange-500" /> Visuelle Themen-Inspiration
+                      </label>
+                      <button
+                        onClick={handleGenerateMindMap}
+                        disabled={isMindMapLoading}
+                        className="text-[10px] uppercase tracking-widest font-bold text-orange-500 hover:text-orange-600 disabled:opacity-50 transition-colors flex items-center gap-1"
+                      >
+                        {isMindMapLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                        Mind-Map generieren
+                      </button>
+                    </div>
+
+                    {mindMapNodes.length > 0 ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {mindMapNodes.map((node) => (
+                          <motion.button
+                            key={node.id}
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                            onClick={() => setTopic(`${node.label}: ${node.description}`)}
+                            className="p-4 rounded-xl border border-stone-100 text-left space-y-1 transition-all hover:shadow-md"
+                            style={{ backgroundColor: node.color || '#F5F5F4' }}
+                          >
+                            <p className="font-bold text-sm">{node.label}</p>
+                            <p className="text-[10px] text-stone-600 leading-tight">{node.description}</p>
+                          </motion.button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-stone-400 italic text-center py-4">
+                        Klicke auf "Mind-Map generieren", um visuelle Themen-Zweige zu erhalten.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="relative">
                   <textarea
                     value={topic}
-                    onChange={(e) => setTopic(e.target.value)}
+                    onChange={(e) => {
+                      setTopic(e.target.value);
+                      if (topicRefinements.length > 0) setTopicRefinements([]);
+                    }}
                     placeholder={selectedCategory === CATEGORIES[0] ? "Beschreibe dein Thema hier..." : "Hier erscheint dein generiertes Thema oder gib dein eigenes ein..."}
                     className="w-full min-h-[320px] p-6 bg-white border border-stone-200 rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all text-base sm:text-lg resize-none leading-relaxed"
                   />
-                  <div className="absolute bottom-4 right-4 text-xs text-stone-400">
+                  <div className="absolute bottom-4 left-4 text-xs text-stone-400">
                     {topic.length} Zeichen
                   </div>
                 </div>
+
+                {/* Topic Refinement UI */}
+                {topic.trim().length > 20 && (
+                  <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-4">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
+                        <Sparkles size={14} className="text-blue-500" /> Themen-Präzisierung
+                      </label>
+                      <button
+                        onClick={handleRefineTopicSuggestions}
+                        disabled={isRefiningTopic}
+                        className="text-[10px] uppercase tracking-widest font-bold text-blue-500 hover:text-blue-600 disabled:opacity-50 transition-colors flex items-center gap-1"
+                      >
+                        {isRefiningTopic ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                        3 Richtungen vorschlagen
+                      </button>
+                    </div>
+
+                    {topicRefinements.length > 0 && (
+                      <div className="grid grid-cols-1 gap-3">
+                        {topicRefinements.map((ref) => (
+                          <motion.button
+                            key={ref.id}
+                            whileHover={{ scale: 1.01 }}
+                            whileTap={{ scale: 0.99 }}
+                            onClick={() => {
+                              setTopic(`${ref.label}: ${ref.description}`);
+                              setTopicRefinements([]);
+                            }}
+                            className="p-4 rounded-xl border border-blue-50 bg-blue-50/30 text-left space-y-1 transition-all hover:bg-blue-50"
+                          >
+                            <p className="font-bold text-sm text-blue-900">{ref.label}</p>
+                            <p className="text-[10px] text-blue-700 leading-tight">{ref.description}</p>
+                          </motion.button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* iOS/Safari Cookie Note */}
                 <div className="p-4 bg-blue-50 border border-blue-100 rounded-xl flex items-start gap-3">
@@ -880,6 +1033,18 @@ export default function App() {
                       </select>
                     </div>
                     <div>
+                      <label className="block text-sm font-medium text-stone-600 mb-2">Ausgabesprache</label>
+                      <select 
+                        value={book.parameters.outputLanguage}
+                        onChange={(e) => updateParams({ outputLanguage: e.target.value as any })}
+                        className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
+                      >
+                        <option value="German">Deutsch</option>
+                        <option value="English">Englisch</option>
+                        <option value="Spanish">Spanisch</option>
+                      </select>
+                    </div>
+                    <div>
                       <label className="block text-sm font-medium text-stone-600 mb-2">Lokalisierung</label>
                       <select 
                         value={book.parameters.localization}
@@ -901,6 +1066,21 @@ export default function App() {
                         <option value="Chronological">Chronologisch</option>
                         <option value="ProblemSolution">Problem-Lösung</option>
                         <option value="Modular">Modular / Nachschlagewerk</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-stone-600 mb-2">Autoren-Persona</label>
+                      <select 
+                        value={book.parameters.persona}
+                        onChange={(e) => updateParams({ persona: e.target.value as any })}
+                        className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
+                      >
+                        <option value="Default">Standard (Neutral)</option>
+                        <option value="Philosopher">Stoischer Philosoph</option>
+                        <option value="TechBlogger">Moderner Tech-Blogger</option>
+                        <option value="Journalist">Investigativer Journalist</option>
+                        <option value="Storyteller">Fesselnder Geschichtenerzähler</option>
+                        <option value="Professor">Akademischer Professor</option>
                       </select>
                     </div>
                     <div className="space-y-2">
@@ -1016,6 +1196,8 @@ export default function App() {
                       { id: 'generateWorksheets', label: 'Arbeitsblätter & Checklisten', icon: FileText },
                       { id: 'generateCheatSheet', label: 'Spickzettel (Cheat Sheet)', icon: Layers },
                       { id: 'generateActionPlan', label: '30-Tage-Aktionsplan', icon: CheckCircle2 },
+                      { id: 'generateChapterImages', label: 'KI-Kapitelbilder (Illustriert)', icon: ImageIcon },
+                      { id: 'includeMetadataPage', label: 'Metadaten-Seite hinzufügen', icon: Settings },
                     ].map((item) => (
                       <label key={item.id} className="flex items-center gap-3 p-3 border border-stone-100 rounded-xl cursor-pointer hover:bg-stone-50 transition-colors">
                         <input
@@ -1213,7 +1395,7 @@ export default function App() {
                 <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400">Export-Optionen</h3>
                 <div className="grid grid-cols-1 gap-3">
                   <button
-                    onClick={() => exportToMarkdown(book.title, fullBookMarkdown, book.coverImageUrl, book.chapters)}
+                    onClick={() => exportToMarkdown(book.title, fullBookMarkdown, book.coverImageUrl, book.chapters, book.parameters, book.generationMetadata)}
                     className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl font-bold flex items-center justify-between hover:bg-stone-100 transition-all"
                   >
                     <div className="flex items-center gap-3">
@@ -1223,7 +1405,7 @@ export default function App() {
                     <Download size={18} className="text-stone-300" />
                   </button>
                   <button
-                    onClick={() => exportToPDF(book.title, fullBookMarkdown, book.coverImageUrl, book.chapters)}
+                    onClick={() => exportToPDF(book.title, fullBookMarkdown, book.coverImageUrl, book.chapters, book.parameters, book.generationMetadata)}
                     className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl font-bold flex items-center justify-between hover:bg-stone-100 transition-all"
                   >
                     <div className="flex items-center gap-3">
@@ -1233,7 +1415,7 @@ export default function App() {
                     <Download size={18} className="text-stone-300" />
                   </button>
                   <button
-                    onClick={() => exportToEPUB(book.title, book.chapters.map(c => ({ title: c.title, content: c.content || "" })), book.coverImageUrl)}
+                    onClick={() => exportToEPUB(book.title, book.chapters.map(c => ({ title: c.title, content: c.content || "", imageUrl: c.imageUrl })), book.coverImageUrl, book.parameters, book.generationMetadata)}
                     className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl font-bold flex items-center justify-between hover:bg-stone-100 transition-all"
                   >
                     <div className="flex items-center gap-3">
