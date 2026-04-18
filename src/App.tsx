@@ -21,11 +21,15 @@ import {
   RotateCcw,
   Key,
   Upload,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Users,
+  Zap,
+  Heart,
+  Globe
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Book, Chapter, BookParameters, DEFAULT_PARAMETERS, ModelType, MindMapNode } from "./types";
-import { generateToC, generateChapterContent, suggestParameters, generateCoverImage, generateChapterImage, refineChapterContent, generateInspiration, regenerateChapterInToC, generateWorksheets, generateCheatSheet, generateActionPlan, summarizeChapter, generateMindMap, refineTopicSuggestions, type TopicRefinement } from "./services/geminiService";
+import { generateToC, generateChapterContent, generateSubChapters, generateSubChapterContent, suggestParameters, generateCoverImage, generateChapterImage, safeGenerateChapterImageWithRetry, refineChapterContent, generateInspiration, regenerateChapterInToC, generateWorksheets, generateCheatSheet, generateActionPlan, summarizeChapter, generateMindMap, refineTopicSuggestions, type TopicRefinement } from "./services/geminiService";
 import { exportToMarkdown, exportToPDF, exportToEPUB, exportToCAsMarkdown } from "./services/exportService";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -34,44 +38,40 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-const CATEGORIES = [
-  "Eigenes Thema und Kategorie",
-  "AI",
-  "Business",
-  "Christlicher Glaube und Theologie",
-  "Filme und Serien",
+const NON_FICTION_CATEGORIES = [
+  "Eigenes Thema",
+  "AI & Technologie",
+  "Business & Finanzen",
+  "Persönlichkeitsentwicklung",
+  "Psychologie & Mental Health",
+  "Wissenschaft & Geschichte",
+  "Philosophie & Religion",
+  "Gesundheit & Fitness",
   "Kochen & Backen",
   "Reisen & Abenteuer",
-  "Persönlichkeitsentwicklung",
-  "Wissenschaft & Technik",
-  "Geschichte",
-  "Krimi & Thriller",
-  "Fantasy & Science Fiction",
-  "Finanzen & Wirtschaft",
-  "Gesundheit & Fitness",
-  "Kunst & Design",
-  "Kinderbücher",
-  "Biografien",
   "Garten & Natur",
-  "Philosophie",
-  "Psychologie",
-  "IT & Programmierung",
   "Nachhaltigkeit & Klima",
   "Astronomie & Weltraum",
-  "Mythologie & Sagen",
-  "True Crime & Forensik",
-  "Minimalismus & Lifestyle",
-  "Spiritualität & Achtsamkeit",
-  "Architektur & Städtebau",
-  "Musik & Musikgeschichte",
-  "Sport & Olympische Spiele",
-  "Mode & Kostümkunde",
-  "Sprachen & Linguistik",
-  "E-Sport & Gaming-Kultur",
-  "Künstliche Intelligenz & Ethik"
+  "Biografien",
+  "Minimalismus & Lifestyle"
 ];
 
-const TONES = [
+const FICTION_CATEGORIES = [
+  "Eigenes Thema",
+  "Drama",
+  "Krimi & Thriller",
+  "Fantasy & Science Fiction",
+  "Romantik & Liebesroman",
+  "Historischer Roman",
+  "Horror & Mystery",
+  "Abenteuer & Action",
+  "Kinderbücher",
+  "Mythologie & Sagen",
+  "True Crime & Forensik",
+  "Filme und Serien"
+];
+
+const NON_FICTION_TONES = [
   "Lustig & Amüsant",
   "Locker & Unterhaltsam",
   "Neutral & Informativ",
@@ -79,19 +79,28 @@ const TONES = [
   "Wissenschaftlich & Ernsthaft"
 ];
 
+const FICTION_TONES = [
+  "Humorvoll & Leicht",
+  "Spannend & Düster",
+  "Atmosphärisch & Emotional",
+  "Dramatisch & Tiefgründig",
+  "Episch & Detailreich"
+];
+
 
 export default function App() {
-  const [step, setStep] = useState<"topic" | "toc" | "parameters" | "preview" | "generating" | "finished">("topic");
+  const [step, setStep] = useState<"type" | "topic" | "toc" | "parameters" | "preview" | "generating" | "finished">("type");
+  const [bookType, setBookType] = useState<'NonFiction' | 'Fiction'>('NonFiction');
   const [topic, setTopic] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState(CATEGORIES[0]);
+  const [selectedCategory, setSelectedCategory] = useState(NON_FICTION_CATEGORIES[0]);
   const [selectedCategory2, setSelectedCategory2] = useState("Keine zweite Kategorie");
   const [wordFocus, setWordFocus] = useState("");
   const [toneValue, setToneValue] = useState(2); // Default: Neutral & Informativ
+  const [chapterCountRange, setChapterCountRange] = useState(DEFAULT_PARAMETERS.chapterCountRange);
   const [preferredModel, setPreferredModel] = useState(DEFAULT_PARAMETERS.preferredModel);
   const [openRouterKey, setOpenRouterKey] = useState("");
   const [book, setBook] = useState<Book | null>(null);
   const [loading, setLoading] = useState(false);
-  const [isInspirationLoading, setIsInspirationLoading] = useState(false);
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
@@ -103,6 +112,8 @@ export default function App() {
   const [topicRefinements, setTopicRefinements] = useState<TopicRefinement[]>([]);
   const [isRefiningTopic, setIsRefiningTopic] = useState(false);
 
+  const currentTones = bookType === 'Fiction' ? FICTION_TONES : NON_FICTION_TONES;
+
   const handleError = (msg: string, err: any) => {
     setError(msg);
     const detail = err instanceof Error ? err.message : JSON.stringify(err, null, 2);
@@ -110,44 +121,29 @@ export default function App() {
     console.error(msg, err);
   };
 
-  // Inspiration Generation
-  const handleGenerateInspiration = async () => {
-    if (selectedCategory === CATEGORIES[0]) return;
-    setIsInspirationLoading(true);
-    setError(null);
-    try {
-      const result = await generateInspiration(
-        selectedCategory, 
-        selectedCategory2, 
-        wordFocus, 
-        TONES[toneValue], 
-        preferredModel, 
-        openRouterKey,
-        book?.parameters.outputLanguage || 'German'
-      );
-      setTopic(result);
-    } catch (err) {
-      handleError("Fehler beim Generieren der Inspiration.", err);
-    } finally {
-      setIsInspirationLoading(false);
-    }
-  };
-
   const handleGenerateMindMap = async () => {
-    if (!wordFocus.trim() && selectedCategory === CATEGORIES[0]) return;
+    if (!wordFocus.trim() && selectedCategory === 'Eigenes Thema') return;
     setIsMindMapLoading(true);
     setError(null);
     try {
-      const nodes = await generateMindMap(
-        wordFocus || selectedCategory,
-        selectedCategory,
-        selectedCategory2,
-        preferredModel,
-        openRouterKey,
-        book?.parameters.outputLanguage || 'German'
+      const timeoutPromise = new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error("Timeout: Die Mind-Map-Erstellung dauert zu lange. Das Modell braucht eventuell mehr Zeit für die detaillierten Beschreibungen.")), 50000)
       );
+
+      const nodes = await Promise.race([
+        generateMindMap(
+          wordFocus || selectedCategory,
+          selectedCategory,
+          selectedCategory2,
+          preferredModel,
+          openRouterKey,
+          'German',
+          bookType
+        ),
+        timeoutPromise
+      ]);
       setMindMapNodes(nodes);
-    } catch (err) {
+    } catch (err: any) {
       handleError("Fehler beim Generieren der Mind-Map.", err);
     } finally {
       setIsMindMapLoading(false);
@@ -159,9 +155,21 @@ export default function App() {
     setIsRefiningTopic(true);
     setError(null);
     try {
-      const refinements = await refineTopicSuggestions(topic, preferredModel, openRouterKey, book?.parameters.outputLanguage || 'German');
-      setTopicRefinements(refinements);
-    } catch (err) {
+      const timeoutPromise = new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error("Timeout: Die Themen-Präzisierung dauert zu lange.")), 40000)
+      );
+
+      const refinements = await Promise.race([
+        refineTopicSuggestions(topic, preferredModel, openRouterKey, 'German', bookType),
+        timeoutPromise
+      ]);
+      
+      if (refinements && refinements.length > 0) {
+        setTopicRefinements(refinements);
+      } else {
+        throw new Error("Keine Vorschläge erhalten.");
+      }
+    } catch (err: any) {
       handleError("Fehler beim Generieren der Themen-Vorschläge.", err);
     } finally {
       setIsRefiningTopic(false);
@@ -175,7 +183,7 @@ export default function App() {
     setError(null);
     try {
       const [tocResult, suggestedParams] = await Promise.all([
-        generateToC(topic, preferredModel, openRouterKey, 'German'),
+        generateToC(topic, preferredModel, openRouterKey, 'German', chapterCountRange, bookType),
         suggestParameters(topic, openRouterKey)
       ]);
       
@@ -183,7 +191,7 @@ export default function App() {
         topic,
         title: tocResult.title,
         chapters: tocResult.chapters,
-        parameters: { ...DEFAULT_PARAMETERS, ...suggestedParams, preferredModel, openRouterKey }
+        parameters: { ...DEFAULT_PARAMETERS, ...suggestedParams, preferredModel, openRouterKey, chapterCountRange, bookType }
       });
       setStep("toc");
     } catch (err) {
@@ -296,7 +304,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const tocResult = await generateToC(book.topic, preferredModel, openRouterKey, book.parameters.outputLanguage);
+      const tocResult = await generateToC(book.topic, preferredModel, openRouterKey, book.parameters.outputLanguage, book.parameters.chapterCountRange);
       setBook({
         ...book,
         title: tocResult.title,
@@ -398,37 +406,82 @@ export default function App() {
 
       for (let i = 0; i < updatedChapters.length; i++) {
         const chapter = updatedChapters[i];
-        const content = await generateChapterContent(
-          currentBook.title, 
-          chapter, 
-          currentBook.parameters, 
-          currentBook.chapters,
-          previousContext
-        );
-        totalRequests++;
-        totalWords += content.split(/\s+/).length;
+        let chapterContent = "";
+
+        // If chapter is long (e.g. > 2000 words), break it into sub-chapters for better quality/length
+        if (currentBook.parameters.wordsPerChapter > 2000) {
+          try {
+            const subChapters = await generateSubChapters(currentBook.title, chapter, currentBook.parameters);
+            totalRequests++;
+            
+            const wordsPerSubChapter = Math.round(currentBook.parameters.wordsPerChapter / (subChapters.length || 1));
+            let chapterAccumulatedContent = "";
+
+            for (let j = 0; j < subChapters.length; j++) {
+              const subChapter = subChapters[j];
+              const subContent = await generateSubChapterContent(
+                currentBook.title,
+                chapter.title,
+                subChapter,
+                currentBook.parameters,
+                wordsPerSubChapter,
+                currentBook.chapters,
+                previousContext
+              );
+              totalRequests++;
+              chapterAccumulatedContent += `## ${subChapter.title}\n\n${subContent}\n\n`;
+              
+              // Partially update UI to show progress
+              updatedChapters[i] = { ...chapter, content: chapterAccumulatedContent };
+              currentBook = { ...currentBook, chapters: [...updatedChapters] };
+              setBook(currentBook);
+            }
+            chapterContent = chapterAccumulatedContent;
+          } catch (subErr) {
+            console.warn("Sub-chapter generation failed, falling back to single request", subErr);
+            chapterContent = await generateChapterContent(
+              currentBook.title, 
+              chapter, 
+              currentBook.parameters, 
+              currentBook.chapters,
+              previousContext
+            );
+            totalRequests++;
+          }
+        } else {
+          chapterContent = await generateChapterContent(
+            currentBook.title, 
+            chapter, 
+            currentBook.parameters, 
+            currentBook.chapters,
+            previousContext
+          );
+          totalRequests++;
+        }
         
-        updatedChapters[i] = { ...chapter, content };
+        totalWords += chapterContent.split(/\s+/).length;
+        updatedChapters[i] = { ...chapter, content: chapterContent };
         
         // Generate chapter image if requested
         if (currentBook.parameters.generateChapterImages) {
           try {
-            const chapterImageUrl = await generateChapterImage(
+            const chapterImageUrl = await safeGenerateChapterImageWithRetry(
               currentBook.title,
               chapter.title,
               chapter.description,
-              currentBook.parameters.imageModel
+              currentBook.parameters.chapterImageModel,
+              currentBook.parameters.imageModel === currentBook.parameters.chapterImageModel ? "gemini-3-pro-image-preview" : currentBook.parameters.imageModel
             );
             totalRequests++;
             updatedChapters[i].imageUrl = chapterImageUrl;
           } catch (imgErr) {
-            console.warn(`Chapter image generation failed for ${chapter.title}`, imgErr);
+            console.warn(`Chapter image generation failed for ${chapter.title} after retries`, imgErr);
           }
         }
         
         // Summarize for next chapter context
         if (i < updatedChapters.length - 1) {
-          const summary = await summarizeChapter(chapter.title, content, 'gemini-3-flash-preview', currentBook.parameters.openRouterKey, currentBook.parameters.outputLanguage);
+          const summary = await summarizeChapter(chapter.title, chapterContent, 'gemini-3-flash-preview', currentBook.parameters.openRouterKey, currentBook.parameters.outputLanguage);
           totalRequests++;
           previousContext += `Kapitel ${i + 1} (${chapter.title}): ${summary}\n`;
         }
@@ -547,6 +600,68 @@ export default function App() {
         </AnimatePresence>
 
         <AnimatePresence mode="wait">
+          {/* Step 0: Book Type Selection */}
+          {step === "type" && (
+            <motion.div
+              key="type"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="space-y-12 text-center py-10"
+            >
+              <div className="space-y-4">
+                <h2 className="text-4xl font-serif italic text-stone-800">Welche Art von Buch schreiben wir heute?</h2>
+                <p className="text-stone-500 max-w-lg mx-auto">Wähle den Grundtyp deines Buchprojekts, damit ich die passenden Werkzeuge und Kategorien für dich bereitstellen kann.</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => {
+                    setBookType('NonFiction');
+                    setSelectedCategory(NON_FICTION_CATEGORIES[0]);
+                    setStep('topic');
+                  }}
+                  className="p-8 bg-white border border-stone-200 rounded-3xl shadow-sm hover:shadow-xl hover:border-orange-500 transition-all group text-left space-y-4"
+                >
+                  <div className="w-16 h-16 bg-orange-50 rounded-2xl flex items-center justify-center text-orange-500 group-hover:bg-orange-500 group-hover:text-white transition-colors">
+                    <FileText size={32} />
+                  </div>
+                  <div>
+                    <h3 className="text-2xl font-bold text-stone-800">Sachbuch</h3>
+                    <p className="text-stone-500">Wissen vermitteln, Probleme lösen oder Themen analysieren. Ideal für Ratgeber, Fachbücher und Biografien.</p>
+                  </div>
+                  <div className="pt-4 flex items-center gap-2 text-orange-500 font-bold uppercase tracking-widest text-xs">
+                    Auswählen <ChevronRight size={14} />
+                  </div>
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => {
+                    setBookType('Fiction');
+                    setSelectedCategory(FICTION_CATEGORIES[0]);
+                    setStep('topic');
+                  }}
+                  className="p-8 bg-white border border-stone-200 rounded-3xl shadow-sm hover:shadow-xl hover:border-blue-500 transition-all group text-left space-y-4"
+                >
+                  <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-500 group-hover:bg-blue-500 group-hover:text-white transition-colors">
+                    <Sparkles size={32} />
+                  </div>
+                  <div>
+                    <h3 className="text-2xl font-bold text-stone-800">Roman / Fiktion</h3>
+                    <p className="text-stone-500">Geschichten erzählen, Welten erschaffen und Charaktere zum Leben erwecken. Ideal für Krimis, Fantasy und Romane.</p>
+                  </div>
+                  <div className="pt-4 flex items-center gap-2 text-blue-500 font-bold uppercase tracking-widest text-xs">
+                    Auswählen <ChevronRight size={14} />
+                  </div>
+                </motion.button>
+              </div>
+            </motion.div>
+          )}
+
           {/* Step 1: Topic Input */}
           {step === "topic" && (
             <motion.div
@@ -556,9 +671,18 @@ export default function App() {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-8"
             >
-              <div className="space-y-2 text-center">
-                <h2 className="text-4xl font-serif font-light leading-tight">Dein nächstes Meisterwerk beginnt hier</h2>
-                <p className="text-stone-500">Wähle eine Kategorie oder beschreibe dein eigenes Thema.</p>
+              <div className="flex flex-col items-center gap-4">
+                <button 
+                  onClick={() => setStep('type')}
+                  className="flex items-center gap-2 text-stone-400 hover:text-stone-700 transition-colors text-xs uppercase tracking-widest font-bold group"
+                >
+                  <ChevronLeft size={16} className="group-hover:-translate-x-1 transition-transform" />
+                  Zurück zum Anfang
+                </button>
+                <div className="space-y-2 text-center">
+                  <h2 className="text-4xl font-serif font-light leading-tight">Dein nächstes Meisterwerk beginnt hier</h2>
+                  <p className="text-stone-500">Wähle eine Kategorie oder beschreibe dein eigenes Thema.</p>
+                </div>
               </div>
 
               <div className="space-y-6">
@@ -618,13 +742,15 @@ export default function App() {
                 <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-6">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <label className="block text-xs uppercase tracking-widest font-bold text-stone-400">Kategorie 1</label>
+                      <div className="flex justify-between items-center">
+                        <label className="block text-xs uppercase tracking-widest font-bold text-stone-400">Kategorie 1</label>
+                      </div>
                       <select 
                         value={selectedCategory}
                         onChange={(e) => setSelectedCategory(e.target.value)}
                         className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20 text-lg font-medium"
                       >
-                        {CATEGORIES.map(cat => (
+                        {(bookType === 'NonFiction' ? NON_FICTION_CATEGORIES : FICTION_CATEGORIES).map(cat => (
                           <option key={cat} value={cat}>{cat}</option>
                         ))}
                       </select>
@@ -637,7 +763,7 @@ export default function App() {
                         className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20 text-lg font-medium"
                       >
                         <option value="Keine zweite Kategorie">Keine zweite Kategorie</option>
-                        {CATEGORIES.filter(c => c !== CATEGORIES[0]).map(cat => (
+                        {(bookType === 'NonFiction' ? NON_FICTION_CATEGORIES : FICTION_CATEGORIES).filter(c => c !== 'Eigenes Thema').map(cat => (
                           <option key={cat} value={cat}>{cat}</option>
                         ))}
                       </select>
@@ -660,7 +786,7 @@ export default function App() {
                 </div>
 
                 {/* Tone Slider & Inspiration Button (only if not "Eigenes Thema") */}
-                {selectedCategory !== CATEGORIES[0] && (
+                {selectedCategory !== 'Eigenes Thema' && (
                   <motion.div 
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: "auto" }}
@@ -668,8 +794,10 @@ export default function App() {
                   >
                     <div className="space-y-4">
                       <div className="flex justify-between items-center">
-                        <label className="block text-xs uppercase tracking-widest font-bold text-stone-400">Tonalität</label>
-                        <span className="text-sm font-bold text-orange-600 bg-orange-50 px-3 py-1 rounded-full">{TONES[toneValue]}</span>
+                        <label className="block text-xs uppercase tracking-widest font-bold text-stone-400">
+                          {bookType === 'Fiction' ? 'Genre-Stimmung' : 'Tonalität'}
+                        </label>
+                        <span className="text-sm font-bold text-orange-600 bg-orange-50 px-3 py-1 rounded-full">{currentTones[toneValue]}</span>
                       </div>
                       <input 
                         type="range"
@@ -681,28 +809,14 @@ export default function App() {
                         className="w-full h-2 bg-stone-100 rounded-lg appearance-none cursor-pointer accent-orange-500"
                       />
                       <div className="flex justify-between text-[10px] uppercase tracking-tighter font-bold text-stone-400">
-                        <span>Lustig</span>
-                        <span>Wissenschaftlich</span>
+                        <span>{bookType === 'Fiction' ? 'Locker' : 'Lustig'}</span>
+                        <span>{bookType === 'Fiction' ? 'Episch' : 'Ernsthaft'}</span>
                       </div>
                     </div>
 
-                    <button
-                      onClick={handleGenerateInspiration}
-                      disabled={isInspirationLoading}
-                      className="w-full py-3 border-2 border-dashed border-stone-200 rounded-xl text-stone-500 font-bold flex items-center justify-center gap-2 hover:border-orange-500 hover:text-orange-500 transition-all"
-                    >
-                      {isInspirationLoading ? <Loader2 className="animate-spin" /> : <Lightbulb size={18} />}
-                      Erstelle zufälliges Thema und Beschreibung
-                    </button>
-                  </motion.div>
-                )}
-
-                {/* Mind Map Section */}
-                {(wordFocus.trim() || selectedCategory !== CATEGORIES[0]) && (
-                  <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-6">
                     <div className="flex items-center justify-between">
                       <label className="block text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
-                        <Sparkles size={14} className="text-orange-500" /> Visuelle Themen-Inspiration
+                        <Sparkles size={14} className="text-orange-500" /> Themen-Vorschläge & Inspiration
                       </label>
                       <button
                         onClick={handleGenerateMindMap}
@@ -710,7 +824,7 @@ export default function App() {
                         className="text-[10px] uppercase tracking-widest font-bold text-orange-500 hover:text-orange-600 disabled:opacity-50 transition-colors flex items-center gap-1"
                       >
                         {isMindMapLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-                        Mind-Map generieren
+                        6 Vorschläge generieren
                       </button>
                     </div>
 
@@ -719,23 +833,23 @@ export default function App() {
                         {mindMapNodes.map((node) => (
                           <motion.button
                             key={node.id}
-                            whileHover={{ scale: 1.02 }}
-                            whileTap={{ scale: 0.98 }}
+                            whileHover={{ scale: 1.01 }}
+                            whileTap={{ scale: 0.99 }}
                             onClick={() => setTopic(`${node.label}: ${node.description}`)}
-                            className="p-4 rounded-xl border border-stone-100 text-left space-y-1 transition-all hover:shadow-md"
+                            className="p-5 rounded-2xl border border-stone-100 text-left space-y-2 transition-all hover:shadow-lg flex flex-col justify-start min-h-[120px]"
                             style={{ backgroundColor: node.color || '#F5F5F4' }}
                           >
-                            <p className="font-bold text-sm">{node.label}</p>
-                            <p className="text-[10px] text-stone-600 leading-tight">{node.description}</p>
+                            <p className="font-bold text-sm text-stone-900 leading-snug">{node.label}</p>
+                            <p className="text-[11px] text-stone-700 leading-relaxed overflow-hidden line-clamp-5">{node.description}</p>
                           </motion.button>
                         ))}
                       </div>
                     ) : (
                       <p className="text-xs text-stone-400 italic text-center py-4">
-                        Klicke auf "Mind-Map generieren", um visuelle Themen-Zweige zu erhalten.
+                        Klicke auf "6 Vorschläge generieren", um detaillierte Themenideen zu erhalten.
                       </p>
                     )}
-                  </div>
+                  </motion.div>
                 )}
 
                 <div className="relative">
@@ -745,7 +859,7 @@ export default function App() {
                       setTopic(e.target.value);
                       if (topicRefinements.length > 0) setTopicRefinements([]);
                     }}
-                    placeholder={selectedCategory === CATEGORIES[0] ? "Beschreibe dein Thema hier..." : "Hier erscheint dein generiertes Thema oder gib dein eigenes ein..."}
+                    placeholder={selectedCategory === 'Eigenes Thema' ? "Beschreibe dein Thema hier..." : "Hier erscheint dein generiertes Thema oder gib dein eigenes ein..."}
                     className="w-full min-h-[320px] p-6 bg-white border border-stone-200 rounded-2xl shadow-sm focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 outline-none transition-all text-base sm:text-lg resize-none leading-relaxed"
                   />
                   <div className="absolute bottom-4 left-4 text-xs text-stone-400">
@@ -798,6 +912,30 @@ export default function App() {
                   <p className="text-xs text-blue-800 leading-tight">
                     <strong>Hinweis für iOS/Safari:</strong> Falls die App nicht lädt, öffne sie bitte in einem <strong>neuen Tab</strong> (Icon oben rechts im AI Studio) oder nutze "Zum Home-Bildschirm hinzufügen", um Cookie-Beschränkungen zu umgehen.
                   </p>
+                </div>
+
+                {/* Chapter Count Range Select */}
+                <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-4">
+                  <label className="block text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
+                    <Layers size={14} className="text-orange-500" /> Anzahl der Kapitel
+                  </label>
+                  <div className="flex gap-2">
+                    {['4-7', '8-10', '11-14'].map((range) => (
+                      <button
+                        key={range}
+                        onClick={() => setChapterCountRange(range as any)}
+                        className={cn(
+                          "flex-1 py-3 px-4 rounded-xl border font-bold transition-all",
+                          chapterCountRange === range 
+                            ? "bg-orange-500 border-orange-500 text-white shadow-lg shadow-orange-200"
+                            : "bg-white border-stone-200 text-stone-600 hover:border-orange-500"
+                        )}
+                      >
+                        {range}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-stone-400 italic">Legt fest, wie detailliert das Inhaltsverzeichnis strukturiert sein soll.</p>
                 </div>
               </div>
 
@@ -946,7 +1084,7 @@ export default function App() {
                         className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-orange-500/20"
                       >
                         <option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image (Standard)</option>
-                        <option value="gemini-2.0-flash-exp-image">Gemini 2.0 Flash Exp Image</option>
+                        <option value="gemini-3-pro-image-preview">Gemini 3 Pro Image (High Quality)</option>
                       </select>
                       <p className="text-[10px] text-stone-400 leading-tight">
                         Wähle die KI aus, die das Coverbild für dich entwerfen soll.
@@ -1101,6 +1239,94 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Fiction Specific Settings */}
+                {book.parameters.bookType === 'Fiction' && (
+                  <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-6">
+                    <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
+                       <Sparkles size={14} className="text-blue-500" /> Roman-Einstellungen
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-stone-600 mb-2">Dramaturgisches Modell</label>
+                          <select 
+                            value={book.parameters.dramaticModel}
+                            onChange={(e) => updateParams({ dramaticModel: e.target.value as any })}
+                            className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500/20"
+                          >
+                            <option value="HerosJourney">Heldenreise (Hero's Journey)</option>
+                            <option value="ThreeAct">3-Akt-Struktur</option>
+                            <option value="InMediaRes">In Medias Res (Direkter Einstieg)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-stone-600 mb-2">Charakter-Fokus</label>
+                          <select 
+                            value={book.parameters.characterFocus}
+                            onChange={(e) => updateParams({ characterFocus: e.target.value as any })}
+                            className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500/20"
+                          >
+                            <option value="PlotDriven">Handlungsgetrieben (Plot-driven)</option>
+                            <option value="CharacterDriven">Charaktergetrieben (Character-driven)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-stone-600 mb-2">Erzählzeit</label>
+                          <select 
+                            value={book.parameters.narrativeTense}
+                            onChange={(e) => updateParams({ narrativeTense: e.target.value as any })}
+                            className="w-full p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500/20"
+                          >
+                            <option value="Past">Präteritum (Vergangenheit)</option>
+                            <option value="Present">Präsens (Gegenwart)</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="space-y-6">
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-center">
+                            <label className="block text-sm font-medium text-stone-600">Spannungskurve</label>
+                            <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded-full">
+                              {book.parameters.tensionLevel === 0 ? 'Beschaulich' : book.parameters.tensionLevel === 4 ? 'Nervenaufreibend' : `Stufe ${book.parameters.tensionLevel}`}
+                            </span>
+                          </div>
+                          <input 
+                            type="range"
+                            min="0"
+                            max="4"
+                            step="1"
+                            value={book.parameters.tensionLevel}
+                            onChange={(e) => updateParams({ tensionLevel: parseInt(e.target.value) })}
+                            className="w-full h-2 bg-stone-100 rounded-lg appearance-none cursor-pointer accent-blue-500 mt-1"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-center">
+                            <label className="block text-sm font-medium text-stone-600">Weltenbau-Intensität</label>
+                            <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded-full">
+                               {book.parameters.worldbuildingIntensity === 0 ? 'Minimal' : book.parameters.worldbuildingIntensity === 4 ? 'Sehr Detailreich' : `Stufe ${book.parameters.worldbuildingIntensity}`}
+                            </span>
+                          </div>
+                          <input 
+                            type="range"
+                            min="0"
+                            max="4"
+                            step="1"
+                            value={book.parameters.worldbuildingIntensity}
+                            onChange={(e) => updateParams({ worldbuildingIntensity: parseInt(e.target.value) })}
+                            className="w-full h-2 bg-stone-100 rounded-lg appearance-none cursor-pointer accent-blue-500 mt-1"
+                          />
+                        </div>
+                        <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
+                           <p className="text-[10px] text-blue-800 leading-tight italic">
+                             Diese Parameter beeinflussen die dramaturgische Tiefe, Charakterzeichnung und die atmosphärische Dichte deines Romans.
+                           </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Model Selection */}
                 <div className="bg-white p-6 border border-stone-200 rounded-2xl shadow-sm space-y-4">
                   <h3 className="text-xs uppercase tracking-widest font-bold text-stone-400 flex items-center gap-2">
@@ -1165,14 +1391,21 @@ export default function App() {
                     <Sparkles size={14} /> Stil-Elemente
                   </h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {[
+                    {(book.parameters.bookType === 'NonFiction' ? [
                       { id: 'useExamples', label: 'Viele Beispiele', icon: Layers },
                       { id: 'reflectionQuestions', label: 'Reflexionsfragen', icon: AlertCircle },
                       { id: 'dialogueStyle', label: 'Dialog-Form', icon: TypeIcon },
                       { id: 'scientific', label: 'Wissenschaftlich', icon: FileText },
                       { id: 'easyToRead', label: 'Leicht lesbar', icon: CheckCircle2 },
                       { id: 'entertaining', label: 'Unterhaltsam', icon: Sparkles },
-                    ].map((item) => (
+                    ] : [
+                      { id: 'atmosphericDescriptions', label: 'Atmosphärische Beschreibungen', icon: Sparkles },
+                      { id: 'deepCharacterDevelopment', label: 'Charaktertiefe', icon: Users },
+                      { id: 'suspensefulPlot', label: 'Hohe Spannung', icon: Zap },
+                      { id: 'emotionalPoetic', label: 'Emotional & Poetisch', icon: Heart },
+                      { id: 'directDialogue', label: 'Viel direkte Rede', icon: TypeIcon },
+                      { id: 'multiplePerspectives', label: 'Perspektivenwechsel', icon: Layers },
+                    ]).map((item) => (
                       <label key={item.id} className="flex items-center gap-3 p-3 border border-stone-100 rounded-xl cursor-pointer hover:bg-stone-50 transition-colors">
                         <input
                           type="checkbox"
@@ -1192,13 +1425,19 @@ export default function App() {
                     <Plus size={14} /> Zusatzmaterialien
                   </h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {[
+                    {(book.parameters.bookType === 'NonFiction' ? [
                       { id: 'generateWorksheets', label: 'Arbeitsblätter & Checklisten', icon: FileText },
                       { id: 'generateCheatSheet', label: 'Spickzettel (Cheat Sheet)', icon: Layers },
                       { id: 'generateActionPlan', label: '30-Tage-Aktionsplan', icon: CheckCircle2 },
                       { id: 'generateChapterImages', label: 'KI-Kapitelbilder (Illustriert)', icon: ImageIcon },
                       { id: 'includeMetadataPage', label: 'Metadaten-Seite hinzufügen', icon: Settings },
-                    ].map((item) => (
+                    ] : [
+                      { id: 'generateCharacterDossiers', label: 'Charakter-Dossiers', icon: Users },
+                      { id: 'generateWorldBuildingNotes', label: 'World-Building Notes', icon: Globe },
+                      { id: 'generatePlotTimeline', label: 'Plot-Timeline', icon: Layers },
+                      { id: 'generateChapterImages', label: 'KI-Kapitelbilder (Illustriert)', icon: ImageIcon },
+                      { id: 'includeMetadataPage', label: 'Metadaten-Seite hinzufügen', icon: Settings },
+                    ]).map((item) => (
                       <label key={item.id} className="flex items-center gap-3 p-3 border border-stone-100 rounded-xl cursor-pointer hover:bg-stone-50 transition-colors">
                         <input
                           type="checkbox"
@@ -1210,6 +1449,25 @@ export default function App() {
                       </label>
                     ))}
                   </div>
+
+                  {book.parameters.generateChapterImages && (
+                    <div className="mt-4 p-4 bg-stone-50 border border-stone-100 rounded-xl space-y-3">
+                      <label className="block text-sm font-medium text-stone-600 flex items-center gap-2">
+                        <ImageIcon size={14} className="text-stone-400" /> Kapitel-Bildmodell (Default)
+                      </label>
+                      <select 
+                        value={book.parameters.chapterImageModel}
+                        onChange={(e) => updateParams({ chapterImageModel: e.target.value as any })}
+                        className="w-full p-2 bg-white border border-stone-200 rounded-lg outline-none text-sm"
+                      >
+                        <option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image (Standard)</option>
+                        <option value="gemini-3-pro-image-preview">Gemini 3 Pro Image (High Quality)</option>
+                      </select>
+                      <p className="text-[10px] text-stone-400 leading-tight italic">
+                        Das Backup-Modell (automatisch) wird genutzt, falls das Primärmodell fehlschlägt (max 2 Versuche).
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Length Inputs */}

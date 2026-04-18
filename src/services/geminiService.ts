@@ -1,18 +1,37 @@
 import { GoogleGenAI, Type, GenerateContentParameters, GenerateContentResponse } from "@google/genai";
-import { Book, BookParameters, Chapter, TargetAudience, NarrativePerspective, ModelType, MindMapNode } from "../types";
+import { Book, BookParameters, Chapter, SubChapter, TargetAudience, NarrativePerspective, ModelType, MindMapNode } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 /**
+ * Extracts text from Gemini or OpenRouter response.
+ */
+function getText(response: any): string {
+  if (!response) return "";
+  let text = "";
+  if (typeof response.text === 'function') text = response.text();
+  else if (typeof response.text === 'string') text = response.text;
+  
+  if (text) {
+    // Attempt to extract JSON (array or object) if it's wrapped in markdown or has leading/trailing text
+    const jsonMatch = text.match(/(\[\s*\{[\s\S]*\}\s*\]|\{\s*"[\s\S]*\}\s*)/);
+    if (jsonMatch) return jsonMatch[0].trim();
+    
+    // Fallback: standard cleanup
+    return text.replace(/```json\n?|```\n?/g, '').trim();
+  }
+  return "";
+}
+
+/**
  * Helper to handle quota errors and fallback to a different model.
- * Supports both Gemini and OpenRouter models.
  */
 async function safeGenerateContent(
-  params: GenerateContentParameters,
-  fallbackModel: ModelType = 'gemini-3-flash-preview',
+  params: any,
+  fallbackModel: ModelType = 'gemini-flash-latest',
   openRouterKey?: string
 ): Promise<GenerateContentResponse> {
-  const isOpenRouter = params.model.startsWith('openrouter/');
+  const isOpenRouter = params.model && params.model.startsWith('openrouter/');
   
   if (isOpenRouter) {
     if (!openRouterKey) {
@@ -20,6 +39,12 @@ async function safeGenerateContent(
     }
     
     const modelId = params.model.replace('openrouter/', '');
+    const promptText = typeof params.contents === 'string' 
+      ? params.contents 
+      : Array.isArray(params.contents) 
+        ? params.contents[0].parts[0].text 
+        : JSON.stringify(params.contents);
+
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -31,7 +56,7 @@ async function safeGenerateContent(
       body: JSON.stringify({
         model: modelId,
         messages: [
-          { role: "user", content: typeof params.contents === 'string' ? params.contents : JSON.stringify(params.contents) }
+          { role: "user", content: promptText }
         ],
         response_format: params.config?.responseMimeType === "application/json" ? { type: "json_object" } : undefined
       })
@@ -45,30 +70,48 @@ async function safeGenerateContent(
     const data = await response.json();
     const text = data.choices[0].message.content;
     
-    // Mocking GenerateContentResponse
     return {
       text,
       candidates: [{ content: { parts: [{ text }] } }]
     } as any;
   }
 
+  // Standard Gemini Call
+  let contents: any[] = [];
+  if (typeof params.contents === 'string') {
+    contents = [{ role: 'user', parts: [{ text: params.contents }] }];
+  } else if (Array.isArray(params.contents)) {
+    contents = params.contents;
+  } else if (params.contents && params.contents.parts) {
+    contents = [params.contents];
+  } else {
+    contents = params.contents ? [params.contents] : [];
+  }
+
   try {
-    return await ai.models.generateContent(params);
+    const result = await (ai as any).models.generateContent({ 
+      model: params.model,
+      contents,
+      generationConfig: params.config
+    });
+    return (result.response || result) as GenerateContentResponse;
   } catch (error: any) {
-    // Check if it's a quota error (Resource has been exhausted (e.g. check quota).)
+    console.error(`AI Generation error for model ${params.model}:`, error);
     if (error?.message?.includes('exhausted') || error?.message?.includes('429')) {
       console.warn(`Quota exceeded for ${params.model}. Falling back to ${fallbackModel}.`);
-      return await ai.models.generateContent({
-        ...params,
+      const result = await (ai as any).models.generateContent({ 
         model: fallbackModel,
+        contents,
+        generationConfig: params.config
       });
+      return (result.response || result) as GenerateContentResponse;
     }
     throw error;
   }
 }
 
 export const suggestParameters = async (topic: string, openRouterKey?: string): Promise<Partial<BookParameters>> => {
-  const model = "gemini-3.1-pro-preview";
+  const model = "gemini-3-flash-preview";
   const response = await safeGenerateContent({
     model,
     contents: `Analysiere das Thema "${topic}" und schlage die optimalen Buchparameter vor. 
@@ -102,11 +145,13 @@ export const suggestParameters = async (topic: string, openRouterKey?: string): 
         }
       }
     }
-  }, 'gemini-3-flash-preview', openRouterKey);
+  }, 'gemini-flash-latest', openRouterKey);
   try {
-    return JSON.parse(response.text || "{}");
+    const text = getText(response);
+    return JSON.parse(text || "{}");
   } catch (e) {
-    throw new Error(`Fehler beim Verarbeiten der KI-Antwort (JSON): ${response.text?.substring(0, 200)}...`);
+    const text = getText(response);
+    throw new Error(`Fehler beim Verarbeiten der KI-Antwort (JSON): ${text?.substring(0, 200)}...`);
   }
 };
 
@@ -173,11 +218,61 @@ export const generateChapterImage = async (
   throw new Error("Kein Kapitelbild generiert");
 };
 
-export const generateToC = async (topic: string, preferredModel: ModelType = 'gemini-3.1-pro-preview', openRouterKey?: string, language: string = 'German'): Promise<{ title: string; chapters: Chapter[] }> => {
+export const safeGenerateChapterImageWithRetry = async (
+  bookTitle: string,
+  chapterTitle: string,
+  chapterDescription: string,
+  primaryModel: string,
+  backupModel: string = "gemini-3-pro-image-preview"
+): Promise<string> => {
+  // Attempt 1: Primary Model
+  try {
+    return await generateChapterImage(bookTitle, chapterTitle, chapterDescription, primaryModel);
+  } catch (err) {
+    console.warn(`Attempt 1 failed with ${primaryModel}. Retrying same model...`, err);
+  }
+
+  // Attempt 2: Primary Model again
+  try {
+    return await generateChapterImage(bookTitle, chapterTitle, chapterDescription, primaryModel);
+  } catch (err) {
+    console.warn(`Attempt 2 failed with ${primaryModel}. Switching to backup ${backupModel}...`, err);
+  }
+
+  // Attempt 3: Backup Model
+  try {
+    return await generateChapterImage(bookTitle, chapterTitle, chapterDescription, backupModel);
+  } catch (err) {
+    console.warn(`Attempt 3 failed with ${backupModel}. Final attempt...`, err);
+  }
+
+  // Attempt 4: Backup Model again
+  try {
+    return await generateChapterImage(bookTitle, chapterTitle, chapterDescription, backupModel);
+  } catch (err) {
+    console.error("All image generation attempts failed.", err);
+    throw err;
+  }
+};
+
+export const generateToC = async (
+  topic: string, 
+  preferredModel: ModelType = 'gemini-3-flash-preview', 
+  openRouterKey?: string, 
+  language: string = 'German',
+  chapterRange: string = '8-10',
+  bookType: 'NonFiction' | 'Fiction' = 'NonFiction'
+): Promise<{ title: string; chapters: Chapter[] }> => {
+  const typeContext = bookType === 'Fiction' 
+    ? "Dieses Buch ist ein ROMAN (Belletristik). Das Inhaltsverzeichnis sollte eine spannende, dramaturgische Struktur haben (z.B. Prolog, verschiedene Akte/Kapitel mit fesselnden Titeln, Epilog)."
+    : "Dieses Buch ist ein SACHBUCH. Das Inhaltsverzeichnis sollte logisch strukturiert, informativ und fachlich fundiert sein.";
+
   const response = await safeGenerateContent({
     model: preferredModel,
     contents: `Erstelle ein strukturiertes Inhaltsverzeichnis für ein Buch zum Thema: "${topic}". 
+    ${typeContext}
     WICHTIG: Antworte in der Sprache: ${language}.
+    WICHTIG: Das Buch MUSS zwischen ${chapterRange.split('-')[0]} und ${chapterRange.split('-')[1]} Kapitel haben.
     ANTWORTE AUSSCHLIESSLICH IM JSON-FORMAT.
     
     WICHTIG FÜR DEN BUCHTITEL:
@@ -217,10 +312,11 @@ export const generateToC = async (topic: string, preferredModel: ModelType = 'ge
         required: ["title", "chapters"]
       }
     }
-  }, 'gemini-3-flash-preview', openRouterKey);
+  }, 'gemini-flash-latest', openRouterKey);
 
   try {
-    const data = JSON.parse(response.text || "{}");
+    const text = getText(response);
+    const data = JSON.parse(text || "{}");
     
     if (!data.chapters || data.chapters.length === 0) {
       throw new Error("Die KI hat ein leeres Inhaltsverzeichnis generiert. Bitte versuche es mit einem anderen Modell oder Thema erneut.");
@@ -236,7 +332,7 @@ export const generateToC = async (topic: string, preferredModel: ModelType = 'ge
     };
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : "Unbekannter Fehler beim Parsen";
-    throw new Error(`${errorMsg} | Roh-Antwort der KI: ${response.text?.substring(0, 500)}...`);
+    throw new Error(`${errorMsg} | Roh-Antwort der KI: ${getText(response)?.substring(0, 500)}...`);
   }
 };
 
@@ -271,14 +367,16 @@ export const regenerateChapterInToC = async (
   }, 'gemini-3-flash-preview', openRouterKey);
 
   try {
-    const data = JSON.parse(response.text || "{}");
+    const text = getText(response);
+    const data = JSON.parse(text || "{}");
     return {
       ...currentChapter,
       title: data.title || currentChapter.title,
       description: data.description || currentChapter.description
     };
   } catch (e) {
-    throw new Error(`Fehler beim Verarbeiten der Kapitel-Regenerierung (JSON): ${response.text?.substring(0, 200)}...`);
+    const text = getText(response);
+    throw new Error(`Fehler beim Verarbeiten der Kapitel-Regenerierung (JSON): ${text?.substring(0, 200)}...`);
   }
 };
 
@@ -301,9 +399,154 @@ export const summarizeChapter = async (
   const response = await safeGenerateContent({
     model: preferredModel,
     contents: prompt,
-  }, 'gemini-3-flash-preview', openRouterKey);
+  }, 'gemini-flash-latest', openRouterKey);
 
-  return response.text || "";
+  const text = getText(response);
+  return text || "";
+};
+
+export const generateSubChapters = async (
+  bookTitle: string,
+  chapter: Chapter,
+  params: BookParameters
+): Promise<SubChapter[]> => {
+  const prompt = `
+    Unterteile das Kapitel "${chapter.title}" für das Buch "${bookTitle}" in logische Unterkapitel.
+    WICHTIG: Antworte in der Sprache: ${params.outputLanguage}.
+    
+    Kontext des Kapitels: ${chapter.description}
+    Ziel-Wortzahl für dieses GESAMTE Kapitel: ${params.wordsPerChapter} Wörter.
+    
+    Basierend auf dieser Wortzahl, erstelle zw. 3 und 6 Unterkapitel, die zusammen das Thema umfassend behandeln.
+    Jedes Unterkapitel sollte einen klaren Fokus haben, damit wir für jedes Unterkapitel separat viel Text generieren können.
+    
+    WICHTIG: Antworte AUSSCHLIESSLICH mit einer JSON-Liste, keine Markierungen wie \`\`\`json.
+    Struktur:
+    [
+      { "title": "Unterkapitel Titel", "description": "Was genau hier detailliert beschrieben werden soll" },
+      ...
+    ]
+  `;
+
+  const response = await safeGenerateContent({
+    model: 'gemini-3-flash-preview', 
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            description: { type: Type.STRING }
+          },
+          required: ["title", "description"]
+        }
+      }
+    }
+  }, 'gemini-flash-latest', params.openRouterKey);
+
+  try {
+    const text = getText(response);
+    if (!text) throw new Error("Keine Antwort von der KI erhalten");
+    return JSON.parse(text);
+  } catch (e) {
+    console.error("Fehler beim Parsen der Unterkapitel", e);
+    // Attempt extra cleaning if needed
+    const text = getText(response);
+    try {
+      if (text) {
+        const cleaned = text.replace(/```json\n?|```\n?/g, '').trim();
+        return JSON.parse(cleaned);
+      }
+    } catch (innerE) {
+      console.error("Final parse attempt failed", innerE);
+    }
+    return [];
+  }
+};
+
+export const generateSubChapterContent = async (
+  bookTitle: string,
+  chapterTitle: string,
+  subChapter: { title: string; description: string },
+  params: BookParameters,
+  targetWords: number,
+  allChapters: Chapter[],
+  previousContext: string = ""
+): Promise<string> => {
+  const styleInstructions = params.bookType === 'NonFiction' ? [
+    params.useExamples ? "- Verwende viele praktische Beispiele." : "",
+    params.reflectionQuestions ? "- Füge Reflexionsfragen am Ende ein." : "",
+    params.dialogueStyle ? "- Schreibe teilweise in Dialogform." : "",
+    params.scientific ? "- Verwende einen wissenschaftlichen, präzisen Tonfall." : "",
+    params.easyToRead ? "- Achte auf hohe Lesbarkeit und klare Sätze." : "",
+    params.entertaining ? "- Gestalte den Inhalt unterhaltsam und fesselnd." : "",
+  ].filter(Boolean).join("\n") : [
+    params.atmosphericDescriptions ? "- Lege großen Wert auf atmosphärische und detaillierte Beschreibungen von Orten und Stimmungen." : "",
+    params.deepCharacterDevelopment ? "- Zeige die inneren Konflikte und die emotionale Entwicklung der Charaktere." : "",
+    params.suspensefulPlot ? "- Erzeuge Spannung durch geschicktes Pacing und Cliffhanger." : "",
+    params.emotionalPoetic ? "- Nutze eine emotionale, teils bildhafte und poetische Sprache." : "",
+    params.directDialogue ? "- Integriere lebendige, charaktertypische direkte Rede." : "",
+    params.multiplePerspectives ? "- Beleuchte die Handlung aus verschiedenen Blickwinkeln." : "",
+  ].filter(Boolean).join("\n");
+
+  const metaInstructions = [
+    `- Target audience: ${params.targetAudience}`,
+    `- Narrative perspective: ${params.narrativePerspective === 'FirstPerson' ? 'I-form' : params.narrativePerspective === 'SecondPerson' ? 'You-form' : 'Third person'}`,
+    `- Language style: ${params.languageStyle === 'Casual' ? 'Casual/Colloquial' : params.languageStyle === 'Academic' ? 'Academic/Formal' : 'Neutral'}`,
+    `- Localization/Culture: ${params.localization === 'DACH' ? 'DACH region (Germany, Austria, Switzerland)' : params.localization === 'US' ? 'USA/American' : 'Global/International'}`,
+    `- Interactivity level: ${params.interactivity} out of 4 (0=passive, 4=very interactive with direct reader address and exercises)`,
+    `- Structure type: ${params.structureType === 'ProblemSolution' ? 'Problem-solution oriented' : params.structureType === 'Modular' ? 'Modular/Reference' : 'Chronological'}`,
+    `- Book type: ${params.bookType === 'Fiction' ? 'Novel / Fiction' : 'Non-fiction / Text book'}`,
+    params.bookType === 'Fiction' 
+      ? "- Fokus auf: Narrativ, Charakterentwicklung, Weltenbau, Dialoge und Atmosphäre (Show, don't tell)."
+      : "- Fokus auf: Wissensvermittlung, Struktur, Klarheit und praktische Relevanz.",
+    params.bookType === 'Fiction' ? [
+      `- Dramaturgisches Modell: ${params.dramaticModel === 'HerosJourney' ? 'Heldenreise' : params.dramaticModel === 'ThreeAct' ? '3-Akt-Struktur' : 'In Medias Res'}`,
+      `- Spannungs-Level: ${params.tensionLevel}/4`,
+      `- Fokus: ${params.characterFocus === 'PlotDriven' ? 'Handlungsgetrieben (Plot-driven)' : 'Charaktergetrieben (Character-driven)'}`,
+      `- Erzählzeit: ${params.narrativeTense === 'Past' ? 'Vergangenheit (Präteritum)' : 'Gegenwart (Präsens)'}`,
+      `- Weltenbau-Detailtiefe: ${params.worldbuildingIntensity}/4`
+    ].join("\n") : "",
+    `- Author persona: ${
+      params.persona === 'Philosopher' ? 'A profound, stoic philosopher' :
+      params.persona === 'TechBlogger' ? 'A motivating, modern tech blogger' :
+      params.persona === 'Journalist' ? 'A factual, investigative journalist' :
+      params.persona === 'Storyteller' ? 'A captivating storyteller' :
+      params.persona === 'Professor' ? 'An explaining, academic professor' :
+      'Standard (Neutral)'
+    }`,
+    `- Output language: ${params.outputLanguage}`,
+  ].filter(Boolean).join("\n");
+
+  const prompt = `
+    Schreibe den Abschnitt "${subChapter.title}" für das Kapitel "${chapterTitle}" des Buches "${bookTitle}".
+    WICHTIG: Schreibe in der Sprache: ${params.outputLanguage}.
+    
+    Kontext dieses Abschnitts: ${subChapter.description}
+    ZIEL-WORTZAHL für diesen Abschnitt: ca. ${targetWords} Wörter.
+    
+    Anforderungen:
+    - GEHE EXTREM INS DETAIL.
+    - Nutze Beispiele, Analogien und tiefgehende Erklärungen.
+    - Schreibe in flüssigem Markdown-Format.
+    - Verwende Überschriften (###), falls sinnvoll für die Struktur innerhalb des Abschnitts.
+    
+    Stil-Vorgaben:
+    ${styleInstructions}
+    
+    Vorheriger Kontext/Zusammenfassung:
+    ${previousContext}
+  `;
+
+  const response = await safeGenerateContent({
+    model: params.preferredModel,
+    contents: prompt,
+  }, 'gemini-flash-latest', params.openRouterKey);
+
+  return getText(response) || "";
 };
 
 export const generateChapterContent = async (
@@ -314,27 +557,38 @@ export const generateChapterContent = async (
   previousContext: string = ""
 ): Promise<string> => {
   const styleInstructions = [
-    params.useExamples ? "- Verwende viele praktische Beispiele." : "",
-    params.reflectionQuestions ? "- Füge am Ende Reflexionsfragen ein." : "",
-    params.dialogueStyle ? "- Schreibe teilweise in Dialogform." : "",
-    params.scientific ? "- Verwende einen wissenschaftlichen, präzisen Ton." : "",
-    params.easyToRead ? "- Achte auf leichte Lesbarkeit und klare Sätze." : "",
-    params.entertaining ? "- Gestalte den Inhalt unterhaltsam und fesselnd." : "",
-    `- Zielgruppe: ${params.targetAudience}`,
-    `- Erzählperspektive: ${params.narrativePerspective === 'FirstPerson' ? 'Ich-Form' : params.narrativePerspective === 'SecondPerson' ? 'Du-Form' : 'Dritte Person'}`,
-    `- Sprachstil: ${params.languageStyle === 'Casual' ? 'Locker/Umgangssprachlich' : params.languageStyle === 'Academic' ? 'Akademisch/Hochgestochen' : 'Neutral'}`,
-    `- Lokalisierung/Kulturkreis: ${params.localization === 'DACH' ? 'DACH-Region (Deutschland, Österreich, Schweiz)' : params.localization === 'US' ? 'USA/Amerikanisch' : 'Global/International'}`,
-    `- Interaktivitäts-Grad: ${params.interactivity} von 4 (0=passiv, 4=sehr interaktiv mit direkter Leseransprache und Übungen)`,
-    `- Struktur-Typ: ${params.structureType === 'ProblemSolution' ? 'Problem-Lösung-orientiert' : params.structureType === 'Modular' ? 'Modular/Nachschlagewerk' : 'Chronologisch'}`,
-    `- Autoren-Persona: ${
-      params.persona === 'Philosopher' ? 'Ein tiefgründiger, stoischer Philosoph' :
-      params.persona === 'TechBlogger' ? 'Ein motivierender, moderner Tech-Blogger' :
-      params.persona === 'Journalist' ? 'Ein sachlicher, investigativer Journalist' :
-      params.persona === 'Storyteller' ? 'Ein fesselnder Geschichtenerzähler' :
-      params.persona === 'Professor' ? 'Ein erklärender, akademischer Professor' :
+    params.useExamples ? "- Use many practical examples." : "",
+    params.reflectionQuestions ? "- Add reflection questions at the end." : "",
+    params.dialogueStyle ? "- Write partially in dialogue form." : "",
+    params.scientific ? "- Use a scientific, precise tone." : "",
+    params.easyToRead ? "- Ensure easy readability and clear sentences." : "",
+    params.entertaining ? "- Make the content entertaining and engaging." : "",
+    `- Target audience: ${params.targetAudience}`,
+    `- Narrative perspective: ${params.narrativePerspective === 'FirstPerson' ? 'I-form' : params.narrativePerspective === 'SecondPerson' ? 'You-form' : 'Third person'}`,
+    `- Language style: ${params.languageStyle === 'Casual' ? 'Casual/Colloquial' : params.languageStyle === 'Academic' ? 'Academic/Formal' : 'Neutral'}`,
+    `- Localization/Culture: ${params.localization === 'DACH' ? 'DACH region (Germany, Austria, Switzerland)' : params.localization === 'US' ? 'USA/American' : 'Global/International'}`,
+    `- Interactivity level: ${params.interactivity} out of 4 (0=passive, 4=very interactive with direct reader address and exercises)`,
+    `- Structure type: ${params.structureType === 'ProblemSolution' ? 'Problem-solution oriented' : params.structureType === 'Modular' ? 'Modular/Reference' : 'Chronological'}`,
+    `- Book type: ${params.bookType === 'Fiction' ? 'Novel / Fiction' : 'Non-fiction / Text book'}`,
+    params.bookType === 'Fiction' 
+      ? "- Fokus auf: Dramaturgie, Emotionen, lebendige Beschreibungen und fesselndes Storytelling."
+      : "- Fokus auf: Fachliche Tiefe, logischer Aufbau und klare Erklärungen.",
+    params.bookType === 'Fiction' ? [
+      `- Dramaturgisches Modell: ${params.dramaticModel === 'HerosJourney' ? 'Heldenreise' : params.dramaticModel === 'ThreeAct' ? '3-Akt-Struktur' : 'In Medias Res'}`,
+      `- Spannungs-Level: ${params.tensionLevel}/4`,
+      `- Fokus: ${params.characterFocus === 'PlotDriven' ? 'Handlungsgetrieben (Plot-driven)' : 'Charaktergetrieben (Character-driven)'}`,
+      `- Erzählzeit: ${params.narrativeTense === 'Past' ? 'Vergangenheit (Präteritum)' : 'Gegenwart (Präsens)'}`,
+      `- Weltenbau-Detailtiefe: ${params.worldbuildingIntensity}/4`
+    ].join("\n") : "",
+    `- Author persona: ${
+      params.persona === 'Philosopher' ? 'A profound, stoic philosopher' :
+      params.persona === 'TechBlogger' ? 'A motivating, modern tech blogger' :
+      params.persona === 'Journalist' ? 'A factual, investigative journalist' :
+      params.persona === 'Storyteller' ? 'A captivating storyteller' :
+      params.persona === 'Professor' ? 'An explaining, academic professor' :
       'Standard (Neutral)'
     }`,
-    `- Ausgabesprache: ${params.outputLanguage}`,
+    `- Output language: ${params.outputLanguage}`,
   ].filter(Boolean).join("\n");
 
   const contextPrompt = previousContext 
@@ -355,7 +609,13 @@ export const generateChapterContent = async (
     Anforderungen an den Stil:
     ${styleInstructions}
     
-    Ziel-Wortzahl für dieses Kapitel: ca. ${params.wordsPerChapter} Wörter.
+    ZIEL-WORTZAHL: ca. ${params.wordsPerChapter} Wörter.
+    WICHTIG FÜR DIE LÄNGE: 
+    - GEHE EXTREM INS DETAIL. 
+    - Jedes Unterthema muss ausführlich erläutert werden. 
+    - Nutze viele Fallbeispiele, Analogien, Experten-Tipps und tiefgehende Erklärungen, um die angestrebte Wortzahl von ${params.wordsPerChapter} zu erreichen.
+    - Wenn nötig, erweitere das Kapitel um zusätzliche relevante Aspekte, die zur Kapitelbeschreibung passen.
+    - Schreibe einen langen, flüssigen Text mit vielen Details.
     
     Schreibe den Inhalt in Markdown-Format. 
     WICHTIG: Verwende immer doppelte Zeilenumbrüche zwischen Absätzen für eine klare Struktur.
@@ -366,9 +626,9 @@ export const generateChapterContent = async (
   const response = await safeGenerateContent({
     model: params.preferredModel,
     contents: prompt,
-  }, 'gemini-3-flash-preview', params.openRouterKey);
+  }, 'gemini-flash-latest', params.openRouterKey);
 
-  return response.text || "Fehler bei der Generierung des Inhalts.";
+  return getText(response) || "Fehler bei der Generierung des Inhalts.";
 };
 
 export const generateMindMap = async (
@@ -377,19 +637,30 @@ export const generateMindMap = async (
   category2: string,
   preferredModel: ModelType = 'gemini-3.1-pro-preview',
   openRouterKey?: string,
-  language: string = 'German'
+  language: string = 'German',
+  bookType: 'NonFiction' | 'Fiction' = 'NonFiction'
 ): Promise<MindMapNode[]> => {
   const categories = category2 && category2 !== "Keine zweite Kategorie" ? `${category1} und ${category2}` : category1;
+  const typeContext = bookType === 'Fiction'
+    ? `Es handelt sich um einen ROMAN. Erstelle Mind-Map-Zweige, die spannende Handlungsideen, Plot-Twists, Charakter-Beziehungen oder atmosphärische Schauplätze darstellen.`
+    : `Es handelt sich um ein SACHBUCH. Erstelle Mind-Map-Zweige, die spezifische Wissensbereiche, Anwendungsbeispiele oder vertiefende Fachthemen darstellen.`;
+
   const prompt = `
-    Erstelle eine visuelle Mind-Map (als JSON-Liste) mit 6 kreativen Unterthemen oder "Zweigen" basierend auf dem Fokus "${topic}" und den Kategorien "${categories}".
+    Erstelle 6 kreative Themen-Vorschläge (als JSON-Liste) basierend auf dem Fokus "${topic}" und den Kategorien "${categories}".
+    ${typeContext}
     WICHTIG: Antworte in der Sprache: ${language}.
     
-    Jedes Unterthema soll eine spezifische Nische oder einen spannenden Blickwinkel darstellen, der über das Offensichtliche hinausgeht.
+    Jedes Unterthema soll einen spannenden Blickwinkel darstellen, der über das Offensichtliche hinausgeht.
+    
+    WICHTIG FÜR DIE BESCHREIBUNG:
+    - Jede Beschreibung MUSS ausführlich sein (ca. 2 bis 3 Sätze).
+    - Gehe auf spezifische Details und spannende Facetten ein.
+    - Die Beschreibungen sollen informativ sein und dem Nutzer Lust auf das Thema machen.
     
     ANTWORTE AUSSCHLIESSLICH IM JSON-FORMAT.
     Struktur:
     [
-      { "id": "1", "label": "Kurzer Titel", "description": "Ein Satz, der die Idee erklärt", "color": "hex-color (pastell)" },
+      { "id": "1", "label": "Kreativer Buchtitel", "description": "Detaillierte Beschreibung der Buchidee (2-3 Sätze)", "color": "hex-color (hell/pastell)" },
       ...
     ]
     
@@ -415,10 +686,11 @@ export const generateMindMap = async (
         }
       }
     }
-  }, 'gemini-3-flash-preview', openRouterKey);
+  }, 'gemini-flash-latest', openRouterKey);
 
   try {
-    return JSON.parse(response.text || "[]");
+    const text = getText(response);
+    return JSON.parse(text || "[]");
   } catch (e) {
     console.error("MindMap Parsing Error", e);
     return [];
@@ -435,11 +707,17 @@ export const refineTopicSuggestions = async (
   topic: string,
   preferredModel: ModelType = 'gemini-3.1-pro-preview',
   openRouterKey?: string,
-  language: string = 'German'
+  language: string = 'German',
+  bookType: 'NonFiction' | 'Fiction' = 'NonFiction'
 ): Promise<TopicRefinement[]> => {
+  const typeContext = bookType === 'Fiction'
+    ? `Es handelt sich um einen ROMAN. Schlage Wege vor, um die Handlung, das Setting oder den thematischen Kern des Romans interessanter zu gestalten.`
+    : `Es handelt sich um ein SACHBUCH. Schlage Wege vor, um den fachlichen Fokus, die Zielgruppe oder den praktischen Nutzen zu präzisieren.`;
+
   const prompt = `
     Analysiere das folgende Buchthema und schlage 3 verschiedene Wege vor, um es zu präzisieren oder in eine spannende Richtung zu lenken.
     Thema: "${topic}"
+    ${typeContext}
     WICHTIG: Antworte in der Sprache: ${language}.
     
     Jeder Vorschlag sollte eine eigene "Nische" oder einen Fokus darstellen.
@@ -470,17 +748,25 @@ export const refineTopicSuggestions = async (
         }
       }
     }
-  }, 'gemini-3-flash-preview', openRouterKey);
+  }, 'gemini-flash-latest', openRouterKey);
 
   try {
-    return JSON.parse(response.text || "[]");
+    const text = getText(response);
+    return JSON.parse(text || "[]");
   } catch (e) {
-    return [];
+    console.error("Refine Parsing Error", e);
+    throw new Error("Fehler beim Verarbeiten der Präzisierung: Ungültiges Datenformat.");
   }
 };
 
 export const generateWorksheets = async (book: Book): Promise<string> => {
-  const prompt = `
+  const isFiction = book.parameters.bookType === 'Fiction';
+  const prompt = isFiction ? `
+    Erstelle detaillierte Charakter-Dossiers für das Buch "${book.title}".
+    Beschreibe die Hauptfiguren, ihre Motivationen, Hintergründe und Beziehungen zueinander basierend auf:
+    ${book.chapters.map(c => `- ${c.title}: ${c.description}`).join("\n")}
+    Sprache: Deutsch.
+  ` : `
     Erstelle interaktive Arbeitsblätter und Checklisten für das Buch "${book.title}" (Thema: ${book.topic}).
     Basierend auf den Kapiteln:
     ${book.chapters.map(c => `- ${c.title}`).join("\n")}
@@ -495,13 +781,19 @@ export const generateWorksheets = async (book: Book): Promise<string> => {
   const response = await safeGenerateContent({
     model: book.parameters.preferredModel,
     contents: prompt,
-  }, 'gemini-3-flash-preview', book.parameters.openRouterKey);
+  }, 'gemini-flash-latest', book.parameters.openRouterKey);
 
-  return response.text || "";
+  const text = getText(response);
+  return text || "";
 };
 
 export const generateCheatSheet = async (book: Book): Promise<string> => {
-  const prompt = `
+  const isFiction = book.parameters.bookType === 'Fiction';
+  const prompt = isFiction ? `
+    Erstelle "World-Building Notes" für das Buch "${book.title}".
+    Fasse die Welt, das Setting, die Regeln dieser Welt und wichtige atmosphärische Details zusammen.
+    Sprache: Deutsch.
+  ` : `
     Erstelle einen Zusammenfassungs-Spickzettel (Cheat Sheet) für das Buch "${book.title}" (Thema: ${book.topic}).
     Basierend auf den Kapiteln:
     ${book.chapters.map(c => `- ${c.title}`).join("\n")}
@@ -516,13 +808,19 @@ export const generateCheatSheet = async (book: Book): Promise<string> => {
   const response = await safeGenerateContent({
     model: book.parameters.preferredModel,
     contents: prompt,
-  }, 'gemini-3-flash-preview', book.parameters.openRouterKey);
+  }, 'gemini-flash-latest', book.parameters.openRouterKey);
 
-  return response.text || "";
+  const text = getText(response);
+  return text || "";
 };
 
 export const generateActionPlan = async (book: Book): Promise<string> => {
-  const prompt = `
+  const isFiction = book.parameters.bookType === 'Fiction';
+  const prompt = isFiction ? `
+    Erstelle eine Plot-Timeline für das Buch "${book.title}".
+    Stelle die wichtigsten Ereignisse, Wendepunkte und Entwicklungen der Handlung chronologisch dar.
+    Sprache: Deutsch.
+  ` : `
     Erstelle einen extrem detaillierten 30-Tage-Aktionsplan basierend auf dem Buch "${book.title}" (Thema: ${book.topic}).
     Basierend auf den Kapiteln:
     ${book.chapters.map(c => `- ${c.title}`).join("\n")}
@@ -540,9 +838,10 @@ export const generateActionPlan = async (book: Book): Promise<string> => {
   const response = await safeGenerateContent({
     model: book.parameters.preferredModel,
     contents: prompt,
-  }, 'gemini-3-flash-preview', book.parameters.openRouterKey);
+  }, 'gemini-flash-latest', book.parameters.openRouterKey);
 
-  return response.text || "";
+  const text = getText(response);
+  return text || "";
 };
 
 export const generateInspiration = async (
@@ -552,7 +851,8 @@ export const generateInspiration = async (
   tone: string, 
   preferredModel: ModelType = 'gemini-3.1-pro-preview', 
   openRouterKey?: string,
-  language: string = 'German'
+  language: string = 'German',
+  bookType: 'NonFiction' | 'Fiction' = 'NonFiction'
 ): Promise<string> => {
   let categoryContext = `für die Kategorie "${category1}"`;
   if (category2 && category2 !== "Keine zweite Kategorie") {
@@ -564,7 +864,12 @@ export const generateInspiration = async (
     focusContext = `Berücksichtige dabei unbedingt den Wortfokus: "${wordFocus}". Dieses Wort/Thema soll die Richtung der Inspiration maßgeblich beeinflussen.`;
   }
 
+  const typeSpecificPrompt = bookType === 'Fiction'
+    ? `Erstelle eine fesselnde Plot-Idee für einen ROMAN (grobe Storyline oder Ausgangspunkt der Handlung).`
+    : `Erstelle eine informative Buchidee für ein SACHBUCH (Fokus auf Wissensvermittlung oder Problemlösung).`;
+
   const prompt = `
+    ${typeSpecificPrompt}
     Generiere eine inspirierende Buchidee und eine kurze Beschreibung (max. 3 Sätze) ${categoryContext}.
     WICHTIG: Antworte in der Sprache: ${language}.
     Der Tonfall der Beschreibung soll "${tone}" sein.
@@ -575,15 +880,17 @@ export const generateInspiration = async (
     - Vermeide das Wort "Architekt" oder "Architektur", außer es passt fachlich exakt zum Thema.
     
     Gib nur den Text der Idee und Beschreibung zurück, ohne Einleitung oder Formatierung.
-    Beispiel: "Der Code der Sterne: Eine Reise durch die Geschichte der Astronomie von den ersten Teleskopen bis zur modernen Astrophysik."
+    Beispiel für Roman: "Echo der Stille: In einer Welt ohne Klänge entdeckt ein Mädchen eine uralte Melodie, die das Schicksal der Menschheit verändern könnte."
+    Beispiel für Sachbuch: "Deep Work: Über die Geheimnisse der Konzentration in einer Welt der permanenten Ablenkung."
   `;
 
   const response = await safeGenerateContent({
     model: preferredModel,
     contents: prompt,
-  }, 'gemini-3-flash-preview', openRouterKey);
+  }, 'gemini-flash-latest', openRouterKey);
 
-  return response.text || "";
+  const text = getText(response);
+  return text || "";
 };
 
 export const refineChapterContent = async (
@@ -611,7 +918,7 @@ export const refineChapterContent = async (
   const response = await safeGenerateContent({
     model: params.preferredModel,
     contents: prompt,
-  }, 'gemini-3-flash-preview', params.openRouterKey);
+  }, 'gemini-flash-latest', params.openRouterKey);
 
-  return response.text || currentContent;
+  return getText(response) || currentContent;
 };

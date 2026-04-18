@@ -4,13 +4,18 @@ export type LanguageStyle = 'Casual' | 'Neutral' | 'Academic';
 export type Localization = 'DACH' | 'US' | 'Global';
 export type StructureType = 'Chronological' | 'ProblemSolution' | 'Modular';
 export type PersonaType = 'Default' | 'Philosopher' | 'TechBlogger' | 'Journalist' | 'Storyteller' | 'Professor';
+export type DramaticModel = 'HerosJourney' | 'ThreeAct' | 'InMediaRes';
+export type CharacterFocus = 'PlotDriven' | 'CharacterDriven';
+export type NarrativeTense = 'Past' | 'Present';
 
 export type ModelType = 
   | 'gemini-3.1-pro-preview' 
   | 'gemini-3-flash-preview' 
-  | 'gemini-3.1-flash-lite-preview' 
   | 'gemini-flash-latest'
+  | 'gemini-3.1-flash-lite-preview' 
+  | 'gemini-1.5-pro'
   | 'gemini-3.1-flash-live-preview'
+  | 'openrouter/google/gemini-2.0-flash-lite-preview-02-05:free'
   | 'openrouter/qwen/qwen3.6-plus:free'
   | 'openrouter/z-ai/glm-4.5-air:free'
   | 'openrouter/openai/gpt-oss-120b:free'
@@ -22,15 +27,24 @@ export type ModelType =
 
 export type ImageModelType = 
   | 'gemini-2.5-flash-image'
-  | 'gemini-2.0-flash-exp-image';
+  | 'gemini-3-pro-image-preview';
 
 export interface BookParameters {
+  // Non-Fiction Style
   useExamples: boolean;
   reflectionQuestions: boolean;
   dialogueStyle: boolean;
   scientific: boolean;
   easyToRead: boolean;
   entertaining: boolean;
+  // Fiction Style
+  atmosphericDescriptions?: boolean;
+  deepCharacterDevelopment?: boolean;
+  suspensefulPlot?: boolean;
+  emotionalPoetic?: boolean;
+  directDialogue?: boolean;
+  multiplePerspectives?: boolean;
+  
   targetTotalPages: number;
   targetTotalWords: number;
   wordsPerChapter: number;
@@ -49,9 +63,28 @@ export interface BookParameters {
   generateWorksheets: boolean;
   generateCheatSheet: boolean;
   generateActionPlan: boolean;
+  // Fiction Specific Materials
+  generateCharacterDossiers?: boolean;
+  generateWorldBuildingNotes?: boolean;
+  generatePlotTimeline?: boolean;
+  
   generateChapterImages: boolean;
   includeMetadataPage: boolean;
   outputLanguage: 'German' | 'English' | 'Spanish';
+  chapterCountRange: '4-7' | '8-10' | '11-14';
+  chapterImageModel: ImageModelType;
+  bookType: 'NonFiction' | 'Fiction';
+  // Fiction specific
+  dramaticModel: DramaticModel;
+  tensionLevel: number; // 0-4
+  characterFocus: CharacterFocus;
+  narrativeTense: NarrativeTense;
+  worldbuildingIntensity: number; // 0-4
+}
+
+export interface SubChapter {
+  title: string;
+  description: string;
 }
 
 export interface Chapter {
@@ -61,6 +94,7 @@ export interface Chapter {
   content?: string;
   imageUrl?: string;
   isGenerating?: boolean;
+  subChapters?: SubChapter[];
 }
 
 export interface GenerationMetadata {
@@ -103,7 +137,7 @@ export const DEFAULT_PARAMETERS: BookParameters = {
   wordsPerChapter: 1500,
   targetAudience: 'Beginner',
   narrativePerspective: 'SecondPerson',
-  preferredModel: 'gemini-3.1-pro-preview',
+  preferredModel: 'gemini-3-flash-preview',
   imageModel: 'gemini-2.5-flash-image',
   openRouterKey: '',
   languageStyle: 'Neutral',
@@ -114,7 +148,22 @@ export const DEFAULT_PARAMETERS: BookParameters = {
   generateWorksheets: false,
   generateCheatSheet: false,
   generateActionPlan: false,
+  atmosphericDescriptions: true,
+  deepCharacterDevelopment: true,
+  suspensefulPlot: true,
+  generateCharacterDossiers: false,
+  generateWorldBuildingNotes: false,
+  generatePlotTimeline: false,
   generateChapterImages: false,
   includeMetadataPage: false,
   outputLanguage: 'German',
+  chapterCountRange: '8-10',
+  chapterImageModel: 'gemini-2.5-flash-image',
+  bookType: 'NonFiction',
+  // Fiction specific defaults
+  dramaticModel: 'ThreeAct',
+  tensionLevel: 2,
+  characterFocus: 'PlotDriven',
+  narrativeTense: 'Past',
+  worldbuildingIntensity: 2,
 };
